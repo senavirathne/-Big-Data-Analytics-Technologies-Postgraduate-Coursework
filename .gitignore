@@ -1,0 +1,35 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+
+# Task 1 local source and persistent InfluxDB state
+task1-influxdb/data/fairbanks_climate.csv
+task1-influxdb/data/influxdb2/
+
+# Task 2 build/runtime evidence
+task2-kafka-flink/artifacts/
+task2-kafka-flink/evidence/
+
+# Task 3 downloaded dataset and generated evidence
+task3-spark/data/web-BerkStan.txt
+task3-spark/events/*
+!task3-spark/events/.gitkeep
+task3-spark/metrics/*
+!task3-spark/metrics/.gitkeep
+task3-spark/output/*
+!task3-spark/output/.gitkeep
+task3-spark/evidence/
+
+# Task 4 database state and generated evidence
+task4-neo4j/data/*
+!task4-neo4j/data/.gitkeep
+task4-neo4j/import/*
+!task4-neo4j/import/.gitkeep
+task4-neo4j/logs/*
+!task4-neo4j/logs/.gitkeep
+task4-neo4j/results/*
+!task4-neo4j/results/.gitkeep
+
+# Downloaded GitHub Actions evidence remains local
+ci-evidence/
+cloud-evidence/

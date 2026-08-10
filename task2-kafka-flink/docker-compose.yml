@@ -1,0 +1,143 @@
+services:
+  kafka:
+    image: apache/kafka:3.9.1
+    hostname: kafka
+    restart: unless-stopped
+    environment:
+      KAFKA_NODE_ID: 1
+      CLUSTER_ID: 4L6g3nShT-eMCtK--X86sw
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+    networks:
+      - telemetry-network
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  kafka-topic:
+    image: apache/kafka:3.9.1
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-ec"]
+    command:
+      - |
+        /opt/kafka/bin/kafka-topics.sh \
+          --bootstrap-server kafka:9092 \
+          --create \
+          --if-not-exists \
+          --topic traffic-telemetry \
+          --partitions 3 \
+          --replication-factor 1
+        description="$$(/opt/kafka/bin/kafka-topics.sh \
+          --bootstrap-server kafka:9092 \
+          --describe \
+          --topic traffic-telemetry)"
+        grep -q 'PartitionCount: 3' <<<"$$description"
+        grep -q 'ReplicationFactor: 1' <<<"$$description"
+        printf '%s\n' "$$description"
+    networks:
+      - telemetry-network
+    restart: "no"
+
+  flink-jobmanager:
+    image: flink:1.20.3-scala_2.12-java17
+    command: jobmanager
+    restart: unless-stopped
+    ports:
+      - "8081:8081"
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        rest.bind-address: 0.0.0.0
+        web.submit.enable: true
+        parallelism.default: 3
+    networks:
+      - telemetry-network
+    healthcheck:
+      test: ["CMD-SHELL", "bash -ec ': >/dev/tcp/127.0.0.1/8081'"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  flink-taskmanager:
+    image: flink:1.20.3-scala_2.12-java17
+    command: taskmanager
+    restart: unless-stopped
+    depends_on:
+      flink-jobmanager:
+        condition: service_healthy
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        taskmanager.bind-host: 0.0.0.0
+        taskmanager.host: flink-taskmanager
+        taskmanager.rpc.port: 6122
+        taskmanager.numberOfTaskSlots: 3
+        parallelism.default: 3
+    networks:
+      - telemetry-network
+    healthcheck:
+      test: ["CMD-SHELL", "bash -ec ': >/dev/tcp/127.0.0.1/6122'"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  flink-job-build:
+    build:
+      context: ./flink-job
+    volumes:
+      - ./artifacts:/output
+    restart: "no"
+
+  traffic-producer:
+    build:
+      context: ./producer
+    depends_on:
+      kafka-topic:
+        condition: service_completed_successfully
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_TOPIC: traffic-telemetry
+      AUSTIN_DATA_URL: https://data.austintexas.gov/resource/sh59-i6y9.json
+      PUBLISH_INTERVAL_SECONDS: 2
+      SOCRATA_PAGE_SIZE: 1000
+    networks:
+      - telemetry-network
+    restart: on-failure
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import os,time; assert time.time()-os.path.getmtime('/tmp/producer-heartbeat') < 90",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 60s
+
+networks:
+  telemetry-network:
+    driver: bridge

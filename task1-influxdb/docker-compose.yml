@@ -1,0 +1,59 @@
+services:
+  influxdb:
+    image: influxdb:2.7.12-alpine
+    restart: unless-stopped
+    ports:
+      - "8086:8086"
+    environment:
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME: coursework
+      DOCKER_INFLUXDB_INIT_PASSWORD: Coursework-InfluxDB-2026
+      DOCKER_INFLUXDB_INIT_ORG: big-data-coursework
+      DOCKER_INFLUXDB_INIT_BUCKET: climate_raw
+      DOCKER_INFLUXDB_INIT_RETENTION: 0
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: coursework-influx-token
+    volumes:
+      - ./data/influxdb2:/var/lib/influxdb2
+      - ./flux:/queries:ro
+    healthcheck:
+      test: ["CMD", "influx", "ping", "--host", "http://localhost:8086"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+
+  influx-setup:
+    image: influxdb:2.7.12-alpine
+    depends_on:
+      influxdb:
+        condition: service_healthy
+    environment:
+      INFLUX_HOST: http://influxdb:8086
+      INFLUX_ORG: big-data-coursework
+      INFLUX_TOKEN: coursework-influx-token
+      AUX_BUCKET: climate_30d
+    volumes:
+      - ./flux:/queries:ro
+      - ./setup.sh:/setup.sh:ro
+    entrypoint: ["/bin/sh", "/setup.sh"]
+    restart: "no"
+
+  climate-ingest:
+    build:
+      context: ./ingest
+    depends_on:
+      influxdb:
+        condition: service_healthy
+      influx-setup:
+        condition: service_completed_successfully
+    environment:
+      INFLUX_URL: http://influxdb:8086
+      INFLUX_ORG: big-data-coursework
+      INFLUX_BUCKET: climate_raw
+      INFLUX_TOKEN: coursework-influx-token
+      CLIMATE_CSV_URL: https://snap.uaf.edu/tools/community-charts/data/fairbanks_climate.csv
+      CLIMATE_CURRENT_CSV_URL: https://snap.uaf.edu/tools/community-charts/dash/dlCSV?value=AK124
+      CLIMATE_CSV_PATH: /data/fairbanks_climate.csv
+    volumes:
+      - ./data:/data:ro
+    restart: "no"

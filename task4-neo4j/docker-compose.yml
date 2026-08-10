@@ -1,0 +1,89 @@
+name: coursework-task4-neo4j
+
+x-neo4j-image: &neo4j-image neo4j:2026.06.0
+
+services:
+  prepare-patents:
+    image: python:3.12.13-alpine3.22
+    user: "0:0"
+    restart: "no"
+    entrypoint: ["python3", "/scripts/prepare_patents.py"]
+    volumes:
+      - ./scripts:/scripts:ro
+      - ./import:/import
+    networks:
+      - neo4j-network
+
+  neo4j:
+    image: *neo4j-image
+    hostname: neo4j
+    restart: unless-stopped
+    depends_on:
+      prepare-patents:
+        condition: service_completed_successfully
+    environment:
+      NEO4J_AUTH: neo4j/coursework2026
+      NEO4J_server_directories_import: /import
+      NEO4J_dbms_security_allow__csv__import__from__file__urls: "true"
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - ./data:/data
+      - ./logs:/logs
+      - ./import:/import:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          cypher-shell -a bolt://localhost:7687 -u neo4j -p coursework2026
+          'RETURN 1;' >/dev/null 2>&1
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    networks:
+      - neo4j-network
+
+  import-patents:
+    image: *neo4j-image
+    user: "0:0"
+    restart: "no"
+    depends_on:
+      neo4j:
+        condition: service_healthy
+      prepare-patents:
+        condition: service_completed_successfully
+    environment:
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USERNAME: neo4j
+      NEO4J_PASSWORD: coursework2026
+    entrypoint: ["/bin/bash", "/scripts/run_import.sh"]
+    volumes:
+      - ./scripts:/scripts:ro
+      - ./cypher:/queries:ro
+    networks:
+      - neo4j-network
+
+  analyze-patents:
+    image: *neo4j-image
+    user: "0:0"
+    restart: "no"
+    depends_on:
+      import-patents:
+        condition: service_completed_successfully
+    environment:
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USERNAME: neo4j
+      NEO4J_PASSWORD: coursework2026
+    entrypoint: ["/bin/bash", "/scripts/run_analysis.sh"]
+    volumes:
+      - ./scripts:/scripts:ro
+      - ./cypher:/queries:ro
+      - ./results:/results
+    networks:
+      - neo4j-network
+
+networks:
+  neo4j-network:
+    driver: bridge

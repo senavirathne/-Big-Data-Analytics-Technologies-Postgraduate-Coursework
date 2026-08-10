@@ -1,0 +1,103 @@
+name: Coursework Tasks 4 and 5
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "task4-neo4j/**"
+      - "task5-literature-review.md"
+      - ".github/workflows/tasks-4-5.yml"
+      - ".github/scripts/run_task4_neo4j_ci.sh"
+      - ".github/scripts/validate_task4_evidence.py"
+      - ".github/scripts/validate_task5_literature.py"
+  pull_request:
+    paths:
+      - "task4-neo4j/**"
+      - "task5-literature-review.md"
+      - ".github/workflows/tasks-4-5.yml"
+      - ".github/scripts/run_task4_neo4j_ci.sh"
+      - ".github/scripts/validate_task4_evidence.py"
+      - ".github/scripts/validate_task5_literature.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tasks-4-5-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  task-4-neo4j:
+    name: Task 4 - Neo4j runtime evidence
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      COMPOSE_PROJECT_NAME: coursework-task4-${{ github.run_id }}-${{ github.run_attempt }}
+      TASK4_EVIDENCE_DIR: ${{ github.workspace }}/ci-evidence/task4
+
+    steps:
+      - name: Check out coursework
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Check runner disk capacity
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h .
+          docker system df
+          available_kib="$(df -Pk . | awk 'NR == 2 {print $4}')"
+          required_kib="$((6 * 1024 * 1024))"
+          if (( available_kib < required_kib )); then
+            echo "At least 6 GiB of free disk is required; only ${available_kib} KiB is available." >&2
+            exit 1
+          fi
+
+      - name: Run Task 4 and capture evidence
+        shell: bash
+        run: timeout --signal=TERM --kill-after=30s 30m bash .github/scripts/run_task4_neo4j_ci.sh
+
+      - name: Always stop Task 4 containers
+        if: always()
+        shell: bash
+        working-directory: task4-neo4j
+        run: |
+          timeout --signal=TERM --kill-after=15s 2m \
+            docker compose down --volumes --remove-orphans || true
+
+      - name: Upload Task 4 evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: task-4-neo4j-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ci-evidence/task4
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+
+  task-5-literature:
+    name: Task 5 - literature and references
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out coursework
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Validate Task 5 content and authoritative links
+        shell: bash
+        run: |
+          mkdir -p ci-evidence/task5
+          timeout --signal=TERM --kill-after=15s 8m python3 \
+            .github/scripts/validate_task5_literature.py \
+            --paper task5-literature-review.md \
+            --report ci-evidence/task5/validation-report.md
+
+      - name: Upload Task 5 validation report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: task-5-literature-validation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ci-evidence/task5
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6

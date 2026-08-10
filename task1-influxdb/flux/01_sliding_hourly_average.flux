@@ -1,0 +1,5 @@
+from(bucket: "climate_raw")
+    |> range(start: 1900-01-01T00:00:00Z, stop: 2101-01-01T00:00:00Z)
+    |> filter(fn: (row) => row._measurement == "fairbanks_climate")
+    |> aggregateWindow(every: 15m, period: 1h, fn: mean, createEmpty: false)
+    |> yield(name: "sliding_hourly_average")

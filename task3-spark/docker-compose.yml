@@ -1,0 +1,133 @@
+name: coursework-task3-spark
+
+x-spark-image: &spark-image apache/spark:3.5.8-scala2.12-java17-python3-ubuntu
+
+x-worker-common: &worker-common
+  image: *spark-image
+  restart: unless-stopped
+  depends_on:
+    spark-master:
+      condition: service_started
+  environment:
+    SPARK_WORKER_CORES: "2"
+    SPARK_WORKER_MEMORY: 2g
+    SPARK_DAEMON_MEMORY: 512m
+  cpus: 2.0
+  mem_limit: 2g
+  volumes:
+    - ./data:/data:ro
+  networks:
+    - spark-network
+
+services:
+  dataset-init:
+    image: *spark-image
+    user: "0:0"
+    restart: "no"
+    entrypoint: ["python3", "/opt/coursework/apps/download_data.py"]
+    volumes:
+      - ./apps:/opt/coursework/apps:ro
+      - ./data:/data
+    networks:
+      - spark-network
+
+  spark-master:
+    image: *spark-image
+    hostname: spark-master
+    restart: unless-stopped
+    command:
+      - /opt/spark/bin/spark-class
+      - org.apache.spark.deploy.master.Master
+      - --host
+      - spark-master
+      - --port
+      - "7077"
+      - --webui-port
+      - "8080"
+    ports:
+      - "7077:7077"
+      - "8080:8080"
+    networks:
+      - spark-network
+
+  spark-worker-1:
+    <<: *worker-common
+    hostname: spark-worker-1
+    command:
+      - /opt/spark/bin/spark-class
+      - org.apache.spark.deploy.worker.Worker
+      - --host
+      - spark-worker-1
+      - --cores
+      - "2"
+      - --memory
+      - 2g
+      - --webui-port
+      - "8081"
+      - spark://spark-master:7077
+
+  spark-worker-2:
+    <<: *worker-common
+    hostname: spark-worker-2
+    command:
+      - /opt/spark/bin/spark-class
+      - org.apache.spark.deploy.worker.Worker
+      - --host
+      - spark-worker-2
+      - --cores
+      - "2"
+      - --memory
+      - 2g
+      - --webui-port
+      - "8081"
+      - spark://spark-master:7077
+
+  spark-history-server:
+    image: *spark-image
+    hostname: spark-history-server
+    restart: unless-stopped
+    depends_on:
+      spark-master:
+        condition: service_started
+    command:
+      - /opt/spark/bin/spark-class
+      - org.apache.spark.deploy.history.HistoryServer
+    environment:
+      SPARK_HISTORY_OPTS: >-
+        -Dspark.history.fs.logDirectory=file:///opt/spark-events
+        -Dspark.history.fs.update.interval=5s
+        -Dspark.history.ui.port=18080
+    ports:
+      - "18080:18080"
+    volumes:
+      - ./events:/opt/spark-events:ro
+    networks:
+      - spark-network
+
+  run-analysis:
+    image: *spark-image
+    user: "0:0"
+    restart: "no"
+    depends_on:
+      dataset-init:
+        condition: service_completed_successfully
+      spark-master:
+        condition: service_started
+      spark-worker-1:
+        condition: service_started
+      spark-worker-2:
+        condition: service_started
+    entrypoint: ["/bin/bash", "/opt/coursework/scripts/run-analysis.sh"]
+    volumes:
+      - ./apps:/opt/coursework/apps:ro
+      - ./scripts:/opt/coursework/scripts:ro
+      - ./data:/data:ro
+      - ./events:/opt/spark-events
+      - ./metrics:/metrics
+      - ./output:/output
+    networks:
+      - spark-network
+
+networks:
+  spark-network:
+    driver: bridge
