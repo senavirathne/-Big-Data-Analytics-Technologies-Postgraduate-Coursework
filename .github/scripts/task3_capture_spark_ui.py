@@ -138,8 +138,15 @@ def main() -> None:
             audit["captured_pages"].append(page.url)
 
             page.goto(history_url, wait_until="networkidle")
-            application_link = page.get_by_role(
-                "link", name=APPLICATION_NAME, exact=True
+            application_id = history_application.get("id")
+            if not isinstance(application_id, str) or not application_id:
+                raise RuntimeError("History API application has no valid id")
+            application_row = page.locator("#history-summary tbody tr").filter(
+                has_text=APPLICATION_NAME
+            ).first
+            application_row.wait_for(state="visible")
+            application_link = application_row.get_by_role(
+                "link", name=application_id, exact=True
             ).first
             application_link.wait_for()
             app_href = application_link.get_attribute("href")
