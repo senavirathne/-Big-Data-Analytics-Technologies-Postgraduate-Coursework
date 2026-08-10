@@ -119,6 +119,14 @@ def validate_events(path: Path) -> list[Path]:
         raise AssertionError(f"No Spark event logs found under {path}")
     if any(log.stat().st_size == 0 for log in logs):
         raise AssertionError("A Spark event log is empty")
+    for log in logs:
+        try:
+            with log.open("rb") as source:
+                source.read(1)
+        except OSError as error:
+            raise AssertionError(
+                f"Spark event log is not readable by the CI runner: {log}: {error}"
+            ) from error
     return logs
 
 

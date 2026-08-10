@@ -370,6 +370,9 @@ jobs:
             > evidence/spark-master-final.json 2>/dev/null || true
           curl --fail --silent --show-error http://127.0.0.1:18080/api/v1/applications \
             > evidence/spark-history-applications-final.json 2>/dev/null || true
+          find events -type f -not -name '.gitkeep' \
+            -exec stat --format='%A %a %U:%G %n' {} + \
+            > evidence/spark-event-log-permissions.txt 2>/dev/null || true
           find events -type f -not -name '.gitkeep' -exec sha256sum {} + \
             > evidence/spark-event-log-sha256.txt 2>/dev/null || true
           df -h > evidence/runner-disk-final.txt

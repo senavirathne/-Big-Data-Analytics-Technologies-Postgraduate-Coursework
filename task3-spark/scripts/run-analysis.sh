@@ -19,4 +19,11 @@ python3 /opt/coursework/apps/wait_for_cluster.py
   --input file:///data/web-BerkStan.txt \
   --output /output/top_50_indegree.csv
 
+# The analysis container runs as root so it can write to bind-mounted output
+# directories. Spark consequently creates its event log with permissions that
+# can exclude the non-root History Server and GitHub artifact uploader. The
+# application has finished at this point, so expose the completed log read-only.
+find /opt/spark-events -type d -exec chmod 0755 {} +
+find /opt/spark-events -type f -exec chmod 0644 {} +
+
 python3 /opt/coursework/apps/capture_metrics.py
