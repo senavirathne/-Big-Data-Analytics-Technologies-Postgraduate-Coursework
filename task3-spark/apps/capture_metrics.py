@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Extract DAG, stage, shuffle, and task-skew evidence from a Spark event log."""
+"""Extract DAG, stage, shuffle, data-skew, and execution evidence."""
 
 from __future__ import annotations
 
@@ -12,6 +12,13 @@ from typing import Any
 
 EVENT_DIRECTORY = Path("/opt/spark-events")
 OUTPUT = Path("/metrics/execution-metrics.json")
+DATA_ALLOCATION_METRICS = (
+    "input_records",
+    "shuffle_read_records",
+    "shuffle_read_bytes",
+    "shuffle_write_records",
+    "shuffle_write_bytes",
+)
 
 
 def newest_event_log() -> Path:
@@ -65,16 +72,37 @@ def empty_worker_metrics() -> dict[str, int]:
         "tasks": 0,
         "total_task_duration_ms": 0,
         "input_records": 0,
+        "shuffle_read_records": 0,
         "shuffle_read_bytes": 0,
+        "shuffle_write_records": 0,
         "shuffle_write_bytes": 0,
     }
 
 
-def worker_imbalance(worker_metrics: dict[str, dict[str, int]]) -> dict[str, Any]:
+def worker_balance(
+    worker_metrics: dict[str, dict[str, int]],
+    metric_names: tuple[str, ...],
+    *,
+    eligible: bool,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    """Compare worker totals only when the stage has meaningful parallel work."""
+
     ratios: dict[str, float | None] = {}
     zero_allocation: list[str] = []
     signals: list[str] = []
-    for metric_name in empty_worker_metrics():
+    if not eligible:
+        return {
+            "eligible": False,
+            "reason_not_evaluated": reason,
+            "maximum_to_minimum_ratios": {
+                metric_name: None for metric_name in metric_names
+            },
+            "metrics_with_zero_allocation_on_a_worker": [],
+            "signals": [],
+        }
+
+    for metric_name in metric_names:
         values = [worker[metric_name] for worker in worker_metrics.values()]
         if not values or max(values) == 0:
             ratios[metric_name] = None
@@ -89,6 +117,8 @@ def worker_imbalance(worker_metrics: dict[str, dict[str, int]]) -> dict[str, Any
         if ratio >= 3.0:
             signals.append(f"{metric_name}:maximum-at-least-3x-minimum")
     return {
+        "eligible": True,
+        "reason_not_evaluated": None,
         "maximum_to_minimum_ratios": ratios,
         "metrics_with_zero_allocation_on_a_worker": zero_allocation,
         "signals": signals,
@@ -206,8 +236,11 @@ def main() -> None:
                 )
 
     stage_metrics = []
-    task_skew_findings = []
-    worker_skew_findings = []
+    task_data_skew_findings = []
+    stage_worker_data_skew_findings = []
+    task_duration_imbalance_findings = []
+    stage_worker_duration_imbalance_findings = []
+    structural_stage_allocations = []
     application_worker_metrics: dict[str, dict[str, int]] = {
         f"{executor_id}@{executor['host']}": empty_worker_metrics()
         for executor_id, executor in executors.items()
@@ -217,6 +250,13 @@ def main() -> None:
         durations = [task["duration_ms"] for task in stage_tasks]
         input_records = [task["input_records"] for task in stage_tasks]
         shuffle_reads = [task["shuffle_read_bytes"] for task in stage_tasks]
+        shuffle_read_records = [
+            task["shuffle_read_records"] for task in stage_tasks
+        ]
+        shuffle_writes = [task["shuffle_write_bytes"] for task in stage_tasks]
+        shuffle_write_records = [
+            task["shuffle_write_records"] for task in stage_tasks
+        ]
         worker_summary: dict[str, dict[str, int]] = {
             worker: empty_worker_metrics() for worker in application_worker_metrics
         }
@@ -227,15 +267,27 @@ def main() -> None:
             worker_summary[worker]["tasks"] += 1
             worker_summary[worker]["total_task_duration_ms"] += task["duration_ms"]
             worker_summary[worker]["input_records"] += task["input_records"]
+            worker_summary[worker]["shuffle_read_records"] += task[
+                "shuffle_read_records"
+            ]
             worker_summary[worker]["shuffle_read_bytes"] += task["shuffle_read_bytes"]
+            worker_summary[worker]["shuffle_write_records"] += task[
+                "shuffle_write_records"
+            ]
             worker_summary[worker]["shuffle_write_bytes"] += task["shuffle_write_bytes"]
             application_worker_metrics[worker]["tasks"] += 1
             application_worker_metrics[worker]["total_task_duration_ms"] += task[
                 "duration_ms"
             ]
             application_worker_metrics[worker]["input_records"] += task["input_records"]
+            application_worker_metrics[worker]["shuffle_read_records"] += task[
+                "shuffle_read_records"
+            ]
             application_worker_metrics[worker]["shuffle_read_bytes"] += task[
                 "shuffle_read_bytes"
+            ]
+            application_worker_metrics[worker]["shuffle_write_records"] += task[
+                "shuffle_write_records"
             ]
             application_worker_metrics[worker]["shuffle_write_bytes"] += task[
                 "shuffle_write_bytes"
@@ -251,29 +303,100 @@ def main() -> None:
         duration_distribution = task_distribution(durations)
         input_distribution = task_distribution(input_records)
         shuffle_distribution = task_distribution(shuffle_reads)
-        ratios = {
-            "task_duration": duration_distribution["max_to_median_ratio"],
+        shuffle_read_record_distribution = task_distribution(shuffle_read_records)
+        shuffle_write_distribution = task_distribution(shuffle_writes)
+        shuffle_write_record_distribution = task_distribution(shuffle_write_records)
+        task_data_ratios = {
             "input_records": input_distribution["max_to_median_ratio"],
-            "shuffle_read": shuffle_distribution["max_to_median_ratio"],
+            "shuffle_read_records": shuffle_read_record_distribution[
+                "max_to_median_ratio"
+            ],
+            "shuffle_read_bytes": shuffle_distribution["max_to_median_ratio"],
+            "shuffle_write_records": shuffle_write_record_distribution[
+                "max_to_median_ratio"
+            ],
+            "shuffle_write_bytes": shuffle_write_distribution[
+                "max_to_median_ratio"
+            ],
         }
-        skew_signals = [
-            name for name, ratio in ratios.items() if ratio is not None and ratio >= 3.0
+        task_data_signals = [
+            name
+            for name, ratio in task_data_ratios.items()
+            if len(stage_tasks) >= 2 and ratio is not None and ratio >= 3.0
         ]
-        if skew_signals:
-            task_skew_findings.append(
-                {
-                    "stage_id": key[0],
-                    "signals_at_or_above_3x_median": skew_signals,
-                    "ratios": ratios,
-                }
-            )
-        stage_worker_imbalance = worker_imbalance(worker_summary)
-        if stage_worker_imbalance["signals"]:
-            worker_skew_findings.append(
+        if task_data_signals:
+            task_data_skew_findings.append(
                 {
                     "stage_id": key[0],
                     "attempt_id": key[1],
-                    **stage_worker_imbalance,
+                    "signals_at_or_above_3x_median": task_data_signals,
+                    "ratios": task_data_ratios,
+                }
+            )
+
+        duration_ratio = duration_distribution["max_to_median_ratio"]
+        if (
+            len(stage_tasks) >= 2
+            and duration_ratio is not None
+            and duration_ratio >= 3.0
+        ):
+            task_duration_imbalance_findings.append(
+                {
+                    "stage_id": key[0],
+                    "attempt_id": key[1],
+                    "max_to_median_ratio": duration_ratio,
+                }
+            )
+
+        active_workers = {
+            worker: metrics
+            for worker, metrics in worker_summary.items()
+            if metrics["tasks"] > 0
+        }
+        worker_evaluation_reason = None
+        if len(stage_tasks) < 2:
+            worker_evaluation_reason = "single-task stage"
+        elif len(active_workers) < 2:
+            worker_evaluation_reason = "stage tasks ran on only one worker"
+        worker_evaluation_eligible = worker_evaluation_reason is None
+        if not worker_evaluation_eligible:
+            structural_stage_allocations.append(
+                {
+                    "stage_id": key[0],
+                    "attempt_id": key[1],
+                    "task_count": len(stage_tasks),
+                    "active_worker_count": len(active_workers),
+                    "classification": worker_evaluation_reason,
+                    "data_skew_inferred": False,
+                }
+            )
+
+        stage_worker_data_balance = worker_balance(
+            worker_summary,
+            DATA_ALLOCATION_METRICS,
+            eligible=worker_evaluation_eligible,
+            reason=worker_evaluation_reason,
+        )
+        stage_worker_duration_balance = worker_balance(
+            active_workers,
+            ("total_task_duration_ms",),
+            eligible=worker_evaluation_eligible,
+            reason=worker_evaluation_reason,
+        )
+        if stage_worker_data_balance["signals"]:
+            stage_worker_data_skew_findings.append(
+                {
+                    "stage_id": key[0],
+                    "attempt_id": key[1],
+                    **stage_worker_data_balance,
+                }
+            )
+        if stage_worker_duration_balance["signals"]:
+            stage_worker_duration_imbalance_findings.append(
+                {
+                    "stage_id": key[0],
+                    "attempt_id": key[1],
+                    **stage_worker_duration_balance,
                 }
             )
 
@@ -314,10 +437,14 @@ def main() -> None:
                 "task_duration_distribution_ms": duration_distribution,
                 "input_record_distribution": input_distribution,
                 "shuffle_read_distribution_bytes": shuffle_distribution,
+                "shuffle_read_record_distribution": shuffle_read_record_distribution,
+                "shuffle_write_distribution_bytes": shuffle_write_distribution,
+                "shuffle_write_record_distribution": shuffle_write_record_distribution,
                 "shuffle_and_task_allocation_by_worker": dict(
                     sorted(worker_summary.items())
                 ),
-                "worker_imbalance": stage_worker_imbalance,
+                "worker_data_balance": stage_worker_data_balance,
+                "worker_duration_balance": stage_worker_duration_balance,
             }
         )
 
@@ -350,7 +477,42 @@ def main() -> None:
             metric_name: stage[metric_name],
         }
 
-    application_worker_imbalance = worker_imbalance(application_worker_metrics)
+    active_application_workers = {
+        worker: metrics
+        for worker, metrics in application_worker_metrics.items()
+        if metrics["tasks"] > 0
+    }
+    application_workers_eligible = len(active_application_workers) == 2
+    application_worker_data_balance = worker_balance(
+        application_worker_metrics,
+        DATA_ALLOCATION_METRICS,
+        eligible=application_workers_eligible,
+        reason=(
+            None
+            if application_workers_eligible
+            else "the application did not execute tasks on both registered workers"
+        ),
+    )
+    application_worker_duration_balance = worker_balance(
+        active_application_workers,
+        ("total_task_duration_ms",),
+        eligible=application_workers_eligible,
+        reason=(
+            None
+            if application_workers_eligible
+            else "the application did not execute tasks on both registered workers"
+        ),
+    )
+    application_task_allocation = worker_balance(
+        active_application_workers,
+        ("tasks",),
+        eligible=application_workers_eligible,
+        reason=(
+            None
+            if application_workers_eligible
+            else "the application did not execute tasks on both registered workers"
+        ),
+    )
     report = {
         "source_event_log": str(event_log),
         "application": application,
@@ -368,23 +530,36 @@ def main() -> None:
         },
         "stage_duration_shuffle_and_worker_metrics": stage_metrics,
         "application_worker_allocation": dict(sorted(application_worker_metrics.items())),
-        "application_worker_imbalance": application_worker_imbalance,
         "performance_bottleneck_candidates": {
             "longest_stage": largest_stage("stage_duration_ms"),
             "largest_shuffle_read_stage": largest_stage("shuffle_read_bytes"),
             "largest_shuffle_write_stage": largest_stage("shuffle_write_bytes"),
             "largest_disk_spill_stage": largest_stage("disk_spilled_bytes"),
         },
-        "skew_assessment": {
-            "task_criterion": "A task-duration, input-record, or shuffle-read maximum at least 3x its positive median is flagged.",
-            "worker_criterion": "For each stage and the whole application, zero allocation on one registered worker or a maximum at least 3x the other worker is flagged.",
-            "task_findings": task_skew_findings,
-            "worker_findings": worker_skew_findings,
-            "skew_detected": bool(
-                task_skew_findings
-                or worker_skew_findings
-                or application_worker_imbalance["signals"]
+        "data_skew_assessment": {
+            "definition": "Data skew is inferred only from input or shuffle record/byte allocation; task duration is reported separately.",
+            "task_criterion": "For a stage with at least two tasks, a data-volume maximum at least 3x its positive median is flagged.",
+            "worker_criterion": "For a stage using both workers, zero data allocation on one worker or a data-volume maximum at least 3x the other worker is flagged.",
+            "evaluated_stage_count": sum(
+                stage["task_count"] >= 2 for stage in stage_metrics
             ),
+            "task_partition_findings": task_data_skew_findings,
+            "stage_worker_findings": stage_worker_data_skew_findings,
+            "application_worker_data_balance": application_worker_data_balance,
+            "data_skew_detected": bool(
+                task_data_skew_findings
+                or stage_worker_data_skew_findings
+                or application_worker_data_balance["signals"]
+            ),
+        },
+        "execution_imbalance_assessment": {
+            "definition": "Task duration and scheduler allocation are execution-balance signals, not proof of data skew.",
+            "task_duration_criterion": "For a stage with at least two tasks, a task-duration maximum at least 3x its positive median is flagged.",
+            "task_duration_findings": task_duration_imbalance_findings,
+            "stage_worker_duration_findings": stage_worker_duration_imbalance_findings,
+            "structural_stage_allocations": structural_stage_allocations,
+            "application_worker_duration_balance": application_worker_duration_balance,
+            "application_task_allocation": application_task_allocation,
         },
     }
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)

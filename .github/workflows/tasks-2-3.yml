@@ -94,10 +94,14 @@ jobs:
           set -euo pipefail
           docker compose up --detach --wait --wait-timeout 180 \
             kafka flink-jobmanager flink-taskmanager
-          docker compose run --rm kafka-topic | tee evidence/kafka-topic-initializer.log
+          docker compose exec -T kafka \
+            /bin/bash -ec \
+            'test -s /tmp/traffic-telemetry-topic-initialization.log
+            cat /tmp/traffic-telemetry-topic-initialization.log' \
+            | tee evidence/kafka-topic-create-inside-broker.log
           docker compose exec -T kafka \
             /opt/kafka/bin/kafka-topics.sh \
-            --bootstrap-server kafka:9092 \
+            --bootstrap-server localhost:9092 \
             --describe \
             --topic traffic-telemetry \
             | tee evidence/kafka-topic-description.txt
@@ -340,7 +344,7 @@ jobs:
           grep -Fq 'Parsed edge rows: 7600595' evidence/run-analysis.log
           grep -Fq 'Top-50 ranking written' evidence/run-analysis.log
 
-      - name: Validate ranking, DAG, durations, shuffle, skew, and events
+      - name: Validate ranking, DAG, durations, shuffle, data skew, and events
         run: |
           set -euo pipefail
           python3 .github/scripts/validate_task3_outputs.py \

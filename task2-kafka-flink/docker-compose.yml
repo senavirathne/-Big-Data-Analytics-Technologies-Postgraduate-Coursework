@@ -21,42 +21,53 @@ services:
       KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
     networks:
       - telemetry-network
+    post_start:
+      - command:
+          - /bin/bash
+          - -ec
+          - |
+            for attempt in {1..60}; do
+              if /opt/kafka/bin/kafka-topics.sh \
+                --bootstrap-server localhost:9092 \
+                --list >/dev/null 2>&1; then
+                break
+              fi
+              if (( attempt == 60 )); then
+                echo 'Kafka did not become ready for topic initialization' >&2
+                exit 1
+              fi
+              sleep 2
+            done
+            {
+              printf 'broker_hostname=%s\n' "$$HOSTNAME"
+              /opt/kafka/bin/kafka-topics.sh \
+                --bootstrap-server localhost:9092 \
+                --create \
+                --if-not-exists \
+                --topic traffic-telemetry \
+                --partitions 3 \
+                --replication-factor 1
+              /opt/kafka/bin/kafka-topics.sh \
+                --bootstrap-server localhost:9092 \
+                --describe \
+                --topic traffic-telemetry
+            } > /tmp/traffic-telemetry-topic-initialization.log 2>&1
     healthcheck:
       test:
-        [
-          "CMD-SHELL",
-          "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1",
-        ]
+        - CMD
+        - /bin/bash
+        - -ec
+        - |
+          description="$$(/opt/kafka/bin/kafka-topics.sh \
+            --bootstrap-server localhost:9092 \
+            --describe \
+            --topic traffic-telemetry 2>/dev/null)"
+          grep -Eq 'PartitionCount:[[:space:]]*3([^0-9]|$$)' <<<"$$description"
+          grep -Eq 'ReplicationFactor:[[:space:]]*1([^0-9]|$$)' <<<"$$description"
       interval: 5s
       timeout: 5s
       retries: 30
       start_period: 20s
-
-  kafka-topic:
-    image: apache/kafka:3.9.1
-    depends_on:
-      kafka:
-        condition: service_healthy
-    entrypoint: ["/bin/bash", "-ec"]
-    command:
-      - |
-        /opt/kafka/bin/kafka-topics.sh \
-          --bootstrap-server kafka:9092 \
-          --create \
-          --if-not-exists \
-          --topic traffic-telemetry \
-          --partitions 3 \
-          --replication-factor 1
-        description="$$(/opt/kafka/bin/kafka-topics.sh \
-          --bootstrap-server kafka:9092 \
-          --describe \
-          --topic traffic-telemetry)"
-        grep -q 'PartitionCount: 3' <<<"$$description"
-        grep -q 'ReplicationFactor: 1' <<<"$$description"
-        printf '%s\n' "$$description"
-    networks:
-      - telemetry-network
-    restart: "no"
 
   flink-jobmanager:
     image: flink:1.20.3-scala_2.12-java17
@@ -114,8 +125,8 @@ services:
     build:
       context: ./producer
     depends_on:
-      kafka-topic:
-        condition: service_completed_successfully
+      kafka:
+        condition: service_healthy
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       KAFKA_TOPIC: traffic-telemetry

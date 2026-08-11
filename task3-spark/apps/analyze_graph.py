@@ -69,7 +69,11 @@ def main() -> None:
     print(f"Parsed edge rows: {edge_count}")
     print(f"Distinct destination vertices: {destination_count}")
     print(f"Top-50 ranking written to {output}")
-    top_50.show(50, truncate=False)
+    for rank, row in enumerate(rows, start=1):
+        print(
+            f"rank={rank}, destination={row['destination']}, "
+            f"in_degree={row['in_degree']}"
+        )
 
     in_degrees.unpersist()
     edges.unpersist()

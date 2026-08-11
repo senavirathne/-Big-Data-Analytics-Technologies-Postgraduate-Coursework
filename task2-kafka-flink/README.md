@@ -1,17 +1,20 @@
 # Task 2: Kafka and Flink traffic telemetry
 
 Build the uploadable Java job JAR and start the fully containerized KRaft Kafka broker,
-topic initializer, Austin producer, Flink JobManager, and TaskManager:
+Austin producer, Flink JobManager, and TaskManager:
 
 ```sh
 docker compose up --build
 ```
 
-The initializer creates `traffic-telemetry` with exactly three partitions and replication
-factor one. Verify it from the Kafka container:
+The Kafka service's Compose `post_start` hook waits for the broker and then runs
+`kafka-topics.sh --create` **inside the running broker container**. The broker is not marked
+healthy until `traffic-telemetry` has exactly three partitions and replication factor one,
+so the producer cannot start before the topic is ready. This hook requires Docker Compose
+2.30.0 or newer. Verify the topic from the same Kafka container:
 
 ```sh
-docker compose exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --describe --topic traffic-telemetry
+docker compose exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --describe --topic traffic-telemetry
 ```
 
 The producer retrieves the assigned City of Austin dataset, emits structured JSON every two

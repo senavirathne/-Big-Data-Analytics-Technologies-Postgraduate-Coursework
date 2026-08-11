@@ -17,6 +17,10 @@ durations, shuffle metrics, and executor allocation.
 The ranking is in `output/top_50_indegree.csv`. The History Server reconstructs
 its Web Console from the event logs in `events/`; the same logs are parsed into
 `metrics/execution-metrics.json` to record the stage, DAG, shuffle-allocation,
-two-worker skew, and bottleneck evidence in a machine-readable form.
+two-worker data-skew, execution-imbalance, and bottleneck evidence in a
+machine-readable form. Data skew is assessed only from input and shuffle
+record/byte allocation. Task-duration imbalance and stages that inherently use
+only one task or worker are recorded separately and are not mislabeled as data
+skew.
 
 Stop the cluster with `docker compose down`.

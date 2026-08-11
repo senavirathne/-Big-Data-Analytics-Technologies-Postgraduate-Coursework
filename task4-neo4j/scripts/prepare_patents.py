@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import csv
 import gzip
+import hashlib
 import io
 import os
 import urllib.request
@@ -14,6 +15,9 @@ from pathlib import Path
 SOURCE_URL = "https://snap.stanford.edu/data/cit-Patents.txt.gz"
 OUTPUT = Path("/import/patent_edges_5000.csv")
 EDGE_LIMIT = 5_000
+EXPECTED_OUTPUT_SHA256 = (
+    "3c913ccdf8bfbfd2529343dc32dc861478ba12c22a264df87ace78cc772f72ba"
+)
 
 
 def validate(path: Path) -> bool:
@@ -29,7 +33,8 @@ def validate(path: Path) -> bool:
                 int(row["source"])
                 int(row["target"])
                 count += 1
-        return count == EDGE_LIMIT
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        return count == EDGE_LIMIT and digest == EXPECTED_OUTPUT_SHA256
     except (OSError, TypeError, ValueError):
         return False
 
@@ -77,8 +82,13 @@ def main() -> None:
         OUTPUT.unlink(missing_ok=True)
         extract()
     if not validate(OUTPUT):
-        raise RuntimeError("Prepared CSV did not validate as exactly 5,000 citation paths")
-    print(f"Validated {OUTPUT}: exactly {EDGE_LIMIT} directed citation paths")
+        raise RuntimeError(
+            "Prepared CSV did not match the deterministic first 5,000 SNAP citation paths"
+        )
+    print(
+        f"Validated {OUTPUT}: exactly {EDGE_LIMIT} directed citation paths "
+        f"(SHA-256 {EXPECTED_OUTPUT_SHA256})"
+    )
 
 
 if __name__ == "__main__":
