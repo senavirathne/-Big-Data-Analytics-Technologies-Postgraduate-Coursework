@@ -1,5 +1,5 @@
 from(bucket: "climate_raw")
     |> range(start: 1980-01-01T08:00:00Z, stop: 2020-01-01T00:00:00Z)
-    |> filter(fn: (row) => row._measurement == "airport_wind" and row.station == "PAFA")
+    |> filter(fn: (r) => r._measurement == "airport_wind" and r.station == "PAFA")
     |> aggregateWindow(every: 15m, period: 1h, fn: mean, createEmpty: false)
     |> yield(name: "sliding_hourly_average")

@@ -1,7 +1,7 @@
 observations =
     from(bucket: "climate_raw")
         |> range(start: 1980-01-01T08:00:00Z, stop: 2020-01-01T00:00:00Z)
-        |> filter(fn: (row) => row._measurement == "airport_wind" and row.station == "PAFA")
+        |> filter(fn: (r) => r._measurement == "airport_wind" and r.station == "PAFA")
         |> group(columns: ["_field"])
 
 means =
@@ -21,9 +21,9 @@ values = observations |> rename(columns: {_value: "observation"})
 
 join(tables: {value: values, threshold: thresholds}, on: ["_field"])
     |> filter(
-        fn: (row) =>
-            row.observation > row.dataset_mean + (2.0 * row.dataset_stddev) or
-                row.observation < row.dataset_mean - (2.0 * row.dataset_stddev),
+        fn: (r) =>
+            r.observation > r.dataset_mean + (2.0 * r.dataset_stddev) or
+                r.observation < r.dataset_mean - (2.0 * r.dataset_stddev),
     )
     |> rename(columns: {observation: "_value"})
     |> yield(name: "observations_beyond_two_standard_deviations")
