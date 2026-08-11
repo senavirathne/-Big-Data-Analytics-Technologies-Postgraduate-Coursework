@@ -43,7 +43,6 @@ services:
         condition: service_completed_successfully
     environment:
       NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:?Set NEO4J_PASSWORD before running Task 4}
-      NEO4J_PASSWORD: ${NEO4J_PASSWORD:?Set NEO4J_PASSWORD before running Task 4}
       NEO4J_server_directories_import: /import
       NEO4J_dbms_security_allow__csv__import__from__file__urls: "true"
     ports:
@@ -57,7 +56,7 @@ services:
       test:
         - CMD-SHELL
         - >-
-          cypher-shell -a bolt://localhost:7687 -u neo4j -p "$${NEO4J_PASSWORD}"
+          cypher-shell -a bolt://localhost:7687 -u neo4j -p "$${NEO4J_AUTH#*/}"
           'RETURN 1;' >/dev/null 2>&1
       interval: 5s
       timeout: 5s

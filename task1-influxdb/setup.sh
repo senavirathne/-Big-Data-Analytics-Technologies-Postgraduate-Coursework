@@ -6,10 +6,12 @@ bucket_table="$(
     --host "$INFLUX_HOST" \
     --org "$INFLUX_ORG" \
     --token "$INFLUX_TOKEN" \
-    --name "$AUX_BUCKET" \
     --hide-headers
 )"
-bucket_id="$(printf '%s\n' "$bucket_table" | awk 'NR == 1 {print $1}')"
+bucket_id="$(
+  printf '%s\n' "$bucket_table" \
+    | awk -v bucket_name="$AUX_BUCKET" '$2 == bucket_name {print $1; exit}'
+)"
 
 if [ -n "$bucket_id" ]; then
   influx bucket update \
