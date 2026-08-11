@@ -47,7 +47,15 @@ jobs:
         run: |
           set -euo pipefail
           docker compose up --build --detach
-          docker compose wait task1-verifier
+
+          verifier_id="$(docker compose ps --all --quiet task1-verifier)"
+          if [[ -z "$verifier_id" ]]; then
+            echo "Task 1 verifier container was not created" >&2
+            exit 1
+          fi
+
+          verifier_status="$(docker container wait "$verifier_id")"
+          exit "$verifier_status"
 
       - name: Show container status and verification logs
         if: always()

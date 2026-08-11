@@ -67,9 +67,12 @@ use the following commands from a clean committed checkout.
 ```sh
 cd task1-influxdb
 docker compose up --build --detach
-docker compose wait task1-verifier
+verifier_id="$(docker compose ps --all --quiet task1-verifier)"
+test -n "$verifier_id"
+verifier_status="$(docker container wait "$verifier_id")"
 docker compose logs influx-setup climate-ingest task1-verifier
 docker compose down --remove-orphans
+test "$verifier_status" -eq 0
 cd ..
 ```
 
