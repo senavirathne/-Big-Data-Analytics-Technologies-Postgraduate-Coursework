@@ -9,7 +9,7 @@ import time
 import urllib.request
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import quote, urljoin
 
 from playwright.sync_api import Locator, Page, sync_playwright
 
@@ -141,20 +141,16 @@ def main() -> None:
             application_id = history_application.get("id")
             if not isinstance(application_id, str) or not application_id:
                 raise RuntimeError("History API application has no valid id")
-            application_row = page.locator("#history-summary tbody tr").filter(
-                has_text=APPLICATION_NAME
-            ).first
-            application_row.wait_for(state="visible")
-            application_link = application_row.get_by_role(
-                "link", name=application_id, exact=True
-            ).first
-            application_link.wait_for()
-            app_href = application_link.get_attribute("href")
-            if not app_href:
-                raise RuntimeError("History Server application link has no href")
-            app_url = urljoin(f"{history_url}/", app_href)
             screenshot(page, evidence / "spark-history-applications.png")
             audit["captured_pages"].append(page.url)
+
+            attempts = history_application.get("attempts", [])
+            attempt_id = attempts[0].get("attemptId") if attempts else None
+            app_path = f"history/{quote(application_id, safe='')}"
+            if attempt_id is not None:
+                app_path += f"/{quote(str(attempt_id), safe='')}"
+            app_url = urljoin(f"{history_url}/", f"{app_path}/jobs/")
+            audit["application_attempt_id"] = attempt_id
 
             page.goto(app_url, wait_until="networkidle")
             page.get_by_text(APPLICATION_NAME, exact=False).first.wait_for()

@@ -6,5 +6,6 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --requirement requirements.txt
 
 COPY ingest.py .
+COPY test_ingest.py .
 
 CMD ["python", "/app/ingest.py"]

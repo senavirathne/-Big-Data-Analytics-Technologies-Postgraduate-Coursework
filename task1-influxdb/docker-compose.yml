@@ -51,9 +51,24 @@ services:
       INFLUX_ORG: big-data-coursework
       INFLUX_BUCKET: climate_raw
       INFLUX_TOKEN: coursework-influx-token
-      CLIMATE_CSV_URL: https://snap.uaf.edu/tools/community-charts/data/fairbanks_climate.csv
-      CLIMATE_CURRENT_CSV_URL: https://snap.uaf.edu/tools/community-charts/dash/dlCSV?value=AK124
-      CLIMATE_CSV_PATH: /data/fairbanks_climate.csv
+      WIND_CSV_URL: https://data.snap.uaf.edu/data/Base/Other/historical_winds_Alaska_airports/alaska_airports_hourly_winds_PAFA.csv
+    restart: "no"
+
+  task1-verifier:
+    image: influxdb:2.7.12-alpine
+    depends_on:
+      influxdb:
+        condition: service_healthy
+      influx-setup:
+        condition: service_completed_successfully
+      climate-ingest:
+        condition: service_completed_successfully
+    environment:
+      INFLUX_HOST: http://influxdb:8086
+      INFLUX_ORG: big-data-coursework
+      INFLUX_TOKEN: coursework-influx-token
     volumes:
-      - ./data:/data:ro
+      - ./flux:/queries:ro
+      - ./verify.sh:/verify.sh:ro
+    entrypoint: ["/bin/sh", "/verify.sh"]
     restart: "no"

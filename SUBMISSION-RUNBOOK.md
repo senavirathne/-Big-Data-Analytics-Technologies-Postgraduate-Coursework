@@ -1,8 +1,8 @@
 # Coursework verification and submission runbook
 
-Task 1 is deferred and is not part of these steps. The implementation and
-automated checks for Tasks 2–5 are in the repository; the remaining work is to
-run them on Docker and retain evidence for the exact commit you submit.
+The implementations and automated checks for Tasks 1–5 are in the repository;
+the remaining work is to run them on Docker and retain evidence for the exact
+commit you submit.
 
 ## 1. Prepare the exact source revision
 
@@ -21,7 +21,7 @@ git diff --check
 git diff
 ```
 
-Commit only the intended Tasks 2–5 remediation. Do not generate evidence from
+Commit only the intended coursework changes. Do not generate evidence from
 an uncommitted or dirty tree: every evidence manifest records a full Git commit
 SHA, so the recorded revision must contain the code that actually ran.
 
@@ -37,13 +37,15 @@ The second command should print nothing.
 ## 2. Preferred route: run GitHub Actions
 
 Push the committed branch, open the repository's **Actions** page, and manually
-run both workflows against that same branch:
+run all three workflows against that same branch:
 
-1. **Tasks 2 and 3 containerized verification**
-2. **Coursework Tasks 4 and 5**
+1. **Task 1 containerized InfluxDB verification**
+2. **Tasks 2 and 3 containerized verification**
+3. **Coursework Tasks 4 and 5**
 
-All four jobs must be green. Download these four artifacts from those workflow
-runs:
+All five jobs must be green. The Task 1 workflow log must end with the ingestion
+count and `PASS` verification message documented in `task1-influxdb/README.md`.
+Download these four artifacts from the Tasks 2–5 workflow runs:
 
 - `task-2-kafka-flink-evidence-*`
 - `task-3-spark-evidence-*`
@@ -59,6 +61,22 @@ revision being submitted.
 
 The GitHub workflows are the easiest reproducible route. To run locally instead,
 use the following commands from a clean committed checkout.
+
+### Task 1
+
+```sh
+cd task1-influxdb
+docker compose up --build --detach
+docker compose wait task1-verifier
+docker compose logs influx-setup climate-ingest task1-verifier
+docker compose down --remove-orphans
+cd ..
+```
+
+The logs must report `ingested 345587 PAFA historical wind records` followed by
+`PASS: all three Flux operations executed; task and 30-day retention verified`.
+The persistent InfluxDB files remain under `task1-influxdb/data/influxdb2/` and
+are intentionally excluded from Git.
 
 ### Task 2
 

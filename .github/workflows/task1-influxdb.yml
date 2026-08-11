@@ -1,0 +1,64 @@
+name: Task 1 containerized InfluxDB verification
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "task1-influxdb/**"
+      - ".github/workflows/task1-influxdb.yml"
+  pull_request:
+    paths:
+      - "task1-influxdb/**"
+      - ".github/workflows/task1-influxdb.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: task-1-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  task-1-influxdb:
+    name: Task 1 / InfluxDB historical winds
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      COMPOSE_PROJECT_NAME: task1-ci-${{ github.run_id }}-${{ github.run_attempt }}
+
+    steps:
+      - name: Check out coursework
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Validate ingestion code inside its application container
+        working-directory: task1-influxdb
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose config --quiet
+          docker compose run --build --rm --no-deps climate-ingest \
+            python -m unittest -v test_ingest.py
+
+      - name: Provision, ingest, execute all three Flux operations, and verify
+        working-directory: task1-influxdb
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose up --build --detach
+          docker compose wait task1-verifier
+
+      - name: Show container status and verification logs
+        if: always()
+        working-directory: task1-influxdb
+        shell: bash
+        run: |
+          docker compose ps --all
+          docker compose logs influx-setup climate-ingest task1-verifier
+
+      - name: Clean up Task 1 containers
+        if: always()
+        working-directory: task1-influxdb
+        shell: bash
+        run: docker compose down --remove-orphans || true

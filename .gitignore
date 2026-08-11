@@ -2,8 +2,7 @@
 __pycache__/
 *.py[cod]
 
-# Task 1 local source and persistent InfluxDB state
-task1-influxdb/data/fairbanks_climate.csv
+# Task 1 persistent InfluxDB state
 task1-influxdb/data/influxdb2/
 
 # Task 2 build/runtime evidence
