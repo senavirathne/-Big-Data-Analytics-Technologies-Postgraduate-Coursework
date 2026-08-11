@@ -104,6 +104,7 @@ services:
         taskmanager.host: flink-taskmanager
         taskmanager.rpc.port: 6122
         taskmanager.numberOfTaskSlots: 3
+        taskmanager.system-out.mode: LOG
         parallelism.default: 3
     networks:
       - telemetry-network
@@ -148,6 +149,67 @@ services:
       timeout: 5s
       retries: 4
       start_period: 60s
+
+  flink-dashboard-runner:
+    build:
+      context: ./verification
+    image: "${COMPOSE_PROJECT_NAME:-task2}-verification:local"
+    profiles:
+      - verification
+    depends_on:
+      kafka:
+        condition: service_healthy
+      flink-jobmanager:
+        condition: service_healthy
+      flink-taskmanager:
+        condition: service_healthy
+    environment:
+      FLINK_BASE_URL: http://flink-jobmanager:8081
+      SOURCE_COMMIT_SHA: "${SOURCE_COMMIT_SHA:-}"
+    volumes:
+      - ./artifacts:/workspace/artifacts:ro
+      - ./evidence:/workspace/evidence
+    networks:
+      - telemetry-network
+    shm_size: 1gb
+    read_only: true
+    tmpfs:
+      - /tmp
+    command:
+      - /app/task2_flink_dashboard.py
+
+  task2-evidence-verifier:
+    build:
+      context: ./verification
+    image: "${COMPOSE_PROJECT_NAME:-task2}-verification:local"
+    profiles:
+      - verification
+    depends_on:
+      kafka:
+        condition: service_healthy
+      flink-jobmanager:
+        condition: service_healthy
+      flink-taskmanager:
+        condition: service_healthy
+      traffic-producer:
+        condition: service_healthy
+    environment:
+      FLINK_BASE_URL: http://flink-jobmanager:8081
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_TOPIC: traffic-telemetry
+      SOURCE_COMMIT_SHA: "${SOURCE_COMMIT_SHA:-}"
+      TASK2_EVIDENCE_TIMEOUT_SECONDS: "${TASK2_EVIDENCE_TIMEOUT_SECONDS:-900}"
+    volumes:
+      - ./artifacts:/workspace/artifacts:ro
+      - ./evidence:/workspace/evidence
+      - ./:/workspace/coursework:ro
+    networks:
+      - telemetry-network
+    read_only: true
+    tmpfs:
+      - /tmp
+    command:
+      - /app/task2_evidence.py
 
 networks:
   telemetry-network:

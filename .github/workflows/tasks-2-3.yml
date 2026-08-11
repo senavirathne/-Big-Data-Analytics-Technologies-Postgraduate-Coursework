@@ -1,4 +1,4 @@
-name: Tasks 2 and 3 cloud verification
+name: Tasks 2 and 3 containerized verification
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ on:
     paths:
       - "task2-kafka-flink/**"
       - "task3-spark/**"
-      - ".github/scripts/task2_flink_dashboard.py"
+      - ".dockerignore"
       - ".github/scripts/task3_capture_spark_ui.py"
       - ".github/scripts/validate_task3_outputs.py"
       - ".github/workflows/tasks-2-3.yml"
@@ -16,7 +16,7 @@ on:
     paths:
       - "task2-kafka-flink/**"
       - "task3-spark/**"
-      - ".github/scripts/task2_flink_dashboard.py"
+      - ".dockerignore"
       - ".github/scripts/task3_capture_spark_ui.py"
       - ".github/scripts/validate_task3_outputs.py"
       - ".github/workflows/tasks-2-3.yml"
@@ -35,189 +35,25 @@ jobs:
     timeout-minutes: 35
     env:
       COMPOSE_PROJECT_NAME: task2-ci-${{ github.run_id }}-${{ github.run_attempt }}
-      PYTHONUNBUFFERED: "1"
-    defaults:
-      run:
-        shell: bash
+      SOURCE_COMMIT_SHA: ${{ github.sha }}
 
     steps:
       - name: Check out coursework
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Check runner capacity
-        run: |
-          set -euo pipefail
-          available_kb=$(df -Pk "$GITHUB_WORKSPACE" | awk 'NR == 2 { print $4 }')
-          required_kb=$((5 * 1024 * 1024))
-          df -h "$GITHUB_WORKSPACE"
-          docker system df
-          if (( available_kb < required_kb )); then
-            echo "Task 2 requires at least 5 GiB free; only ${available_kb} KiB is available" >&2
-            exit 1
-          fi
-
-      - name: Statically validate Task 2
-        run: |
-          set -euo pipefail
-          docker compose --file task2-kafka-flink/docker-compose.yml config --quiet
-          python3 -m py_compile \
-            task2-kafka-flink/producer/producer.py \
-            .github/scripts/task2_flink_dashboard.py
-          grep -Fq 'TumblingEventTimeWindows.of(Time.minutes(10))' \
-            task2-kafka-flink/flink-job/src/main/java/com/coursework/TrafficWindowJob.java
-          grep -Fq 'Duration.ofSeconds(10)' \
-            task2-kafka-flink/flink-job/src/main/java/com/coursework/TrafficWindowJob.java
-
-      - name: Install cloud browser runtime
-        run: |
-          set -euo pipefail
-          python3 -m pip install --disable-pip-version-check "playwright==1.55.0"
-          python3 -m playwright install --with-deps chromium
-
-      - name: Build the shaded Flink JAR and producer image
+      - name: Build, run, and verify Task 2 in Docker
         working-directory: task2-kafka-flink
+        shell: bash
         run: |
           set -euo pipefail
-          mkdir -p artifacts evidence
-          docker compose build --pull flink-job-build traffic-producer
-          docker compose run --rm flink-job-build | tee evidence/flink-job-build.log
-          test -s artifacts/traffic-window-job.jar
-          sha256sum artifacts/traffic-window-job.jar | tee evidence/flink-job-sha256.txt
-          unzip -p artifacts/traffic-window-job.jar META-INF/MANIFEST.MF \
-            | tee evidence/flink-job-manifest.txt
-          grep -Fq 'Main-Class: com.coursework.TrafficWindowJob' \
-            evidence/flink-job-manifest.txt
-
-      - name: Start Kafka and Flink and verify topology
-        working-directory: task2-kafka-flink
-        run: |
-          set -euo pipefail
-          docker compose up --detach --wait --wait-timeout 180 \
+          docker compose config --quiet
+          docker compose run --build --rm flink-job-build
+          docker compose up --build --detach --wait --wait-timeout 180 \
             kafka flink-jobmanager flink-taskmanager
-          docker compose exec -T kafka \
-            /bin/bash -ec \
-            'test -s /tmp/traffic-telemetry-topic-initialization.log
-            cat /tmp/traffic-telemetry-topic-initialization.log' \
-            | tee evidence/kafka-topic-create-inside-broker.log
-          docker compose exec -T kafka \
-            /opt/kafka/bin/kafka-topics.sh \
-            --bootstrap-server localhost:9092 \
-            --describe \
-            --topic traffic-telemetry \
-            | tee evidence/kafka-topic-description.txt
-          grep -Eq 'PartitionCount:[[:space:]]*3([^0-9]|$)' \
-            evidence/kafka-topic-description.txt
-          grep -Eq 'ReplicationFactor:[[:space:]]*1([^0-9]|$)' \
-            evidence/kafka-topic-description.txt
-          partition_rows=$(grep -Ec 'Partition:[[:space:]]*[0-9]+' \
-            evidence/kafka-topic-description.txt)
-          test "$partition_rows" -eq 3
-
-          curl --fail --silent --show-error http://127.0.0.1:8081/overview \
-            | tee evidence/flink-cluster-overview.json \
-            | jq -e '.taskmanagers == 1 and .["slots-total"] == 3' >/dev/null
-          curl --fail --silent --show-error http://127.0.0.1:8081/taskmanagers \
-            | tee evidence/flink-taskmanagers.json \
-            | jq -e '.taskmanagers | length == 1 and .[0].slotsNumber == 3' >/dev/null
-
-      - name: Upload and deploy through the Flink Web Dashboard
-        run: |
-          set -euo pipefail
-          python3 .github/scripts/task2_flink_dashboard.py \
-            --jar task2-kafka-flink/artifacts/traffic-window-job.jar \
-            --evidence-dir task2-kafka-flink/evidence \
-            | tee task2-kafka-flink/evidence/flink-dashboard-deployment.log
-
-      - name: Run the required two-second producer and verify a real window
-        working-directory: task2-kafka-flink
-        run: |
-          set -euo pipefail
-          curl --fail --silent --show-error --get \
-            'https://data.austintexas.gov/resource/sh59-i6y9.json' \
-            --data-urlencode '$select=read_date,count(*) as row_count' \
-            --data-urlencode '$group=read_date' \
-            --data-urlencode '$order=read_date ASC' \
-            --data-urlencode '$limit=1' \
-            | tee evidence/austin-first-timestamp-count.json
-          first_timestamp_rows=$(jq -er '.[0].row_count | tonumber' \
-            evidence/austin-first-timestamp-count.json)
-          test "$first_timestamp_rows" -gt 0
-
-          docker compose run --detach --name task2-ci-producer traffic-producer
-          docker inspect task2-ci-producer \
-            --format '{{range .Config.Env}}{{println .}}{{end}}' \
-            | sort | tee evidence/producer-environment.txt
-          grep -Fxq 'PUBLISH_INTERVAL_SECONDS=2' evidence/producer-environment.txt
-
-          wait_seconds=$((first_timestamp_rows * 2 + 180))
-          if (( wait_seconds < 300 )); then
-            wait_seconds=300
-          elif (( wait_seconds > 600 )); then
-            wait_seconds=600
-          fi
-          printf '%s\n' "$wait_seconds" | tee evidence/flink-window-wait-bound-seconds.txt
-          deadline=$((SECONDS + wait_seconds))
-          window_found=0
-          while (( SECONDS < deadline )); do
-            docker compose logs --no-color flink-taskmanager \
-              > evidence/flink-taskmanager-live.log
-            if grep -Fq '"vehicle_count_total"' evidence/flink-taskmanager-live.log; then
-              window_found=1
-              break
-            fi
-            job_id=$(jq -r '.job_id' evidence/flink-dashboard-audit.json)
-            state=$(curl --fail --silent --show-error \
-              "http://127.0.0.1:8081/jobs/${job_id}" | jq -r '.state')
-            if [[ "$state" != "RUNNING" ]]; then
-              echo "Flink job left RUNNING state while waiting for output: $state" >&2
-              exit 1
-            fi
-            sleep 5
-          done
-          if (( window_found != 1 )); then
-            echo "No genuine 10-minute event-time window result appeared within ${wait_seconds} seconds" >&2
-            exit 1
-          fi
-
-          docker compose exec -T kafka \
-            /opt/kafka/bin/kafka-console-consumer.sh \
-            --bootstrap-server kafka:9092 \
-            --topic traffic-telemetry \
-            --from-beginning \
-            --max-messages 5 \
-            --timeout-ms 30000 \
-            | tee evidence/kafka-five-genuine-messages.jsonl
-          test "$(wc -l < evidence/kafka-five-genuine-messages.jsonl)" -eq 5
-
-          job_id=$(jq -r '.job_id' evidence/flink-dashboard-audit.json)
-          curl --fail --silent --show-error http://127.0.0.1:8081/jobs/overview \
-            | jq . > evidence/flink-jobs-overview.json
-          curl --fail --silent --show-error "http://127.0.0.1:8081/jobs/${job_id}" \
-            | jq . > evidence/flink-job-details.json
-          curl --fail --silent --show-error "http://127.0.0.1:8081/jobs/${job_id}/config" \
-            | jq . > evidence/flink-job-config.json
-          jq -e \
-            '.state == "RUNNING" and .name == "Austin traffic telemetry: 10-minute sensor totals"' \
-            evidence/flink-job-details.json >/dev/null
-          grep -F '"vehicle_count_total"' evidence/flink-taskmanager-live.log \
-            | tee evidence/flink-window-results.log
-
-      - name: Collect Task 2 diagnostics
-        if: always()
-        working-directory: task2-kafka-flink
-        run: |
-          mkdir -p evidence
-          if docker inspect task2-ci-producer >/dev/null 2>&1; then
-            docker stop --time 10 task2-ci-producer >/dev/null 2>&1 || true
-            docker logs task2-ci-producer > evidence/traffic-producer.log 2>&1 || true
-            docker inspect task2-ci-producer > evidence/traffic-producer-inspect.json || true
-          fi
-          docker compose ps --all > evidence/docker-compose-ps.txt 2>&1 || true
-          docker compose logs --no-color > evidence/docker-compose.log 2>&1 || true
-          curl --fail --silent --show-error http://127.0.0.1:8081/jobs/overview \
-            > evidence/flink-jobs-overview-final.json 2>/dev/null || true
-          df -h > evidence/runner-disk-final.txt
-          docker system df > evidence/docker-disk-final.txt 2>&1 || true
+          docker compose run --build --rm --no-deps flink-dashboard-runner
+          docker compose up --build --detach --wait --wait-timeout 180 \
+            traffic-producer
+          docker compose run --rm --no-deps task2-evidence-verifier
 
       - name: Upload Task 2 runtime evidence
         if: always()
@@ -233,9 +69,8 @@ jobs:
       - name: Clean up Task 2 containers
         if: always()
         working-directory: task2-kafka-flink
-        run: |
-          docker rm --force task2-ci-producer >/dev/null 2>&1 || true
-          docker compose down --volumes --remove-orphans || true
+        shell: bash
+        run: docker compose down --volumes --remove-orphans || true
 
   task-3-spark:
     name: Task 3 / Spark standalone analysis
@@ -243,144 +78,22 @@ jobs:
     timeout-minutes: 45
     env:
       COMPOSE_PROJECT_NAME: task3-ci-${{ github.run_id }}-${{ github.run_attempt }}
-      PYTHONUNBUFFERED: "1"
-    defaults:
-      run:
-        shell: bash
+      COURSEWORK_COMMIT_SHA: ${{ github.sha }}
 
     steps:
       - name: Check out coursework
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Check runner capacity
-        run: |
-          set -euo pipefail
-          available_kb=$(df -Pk "$GITHUB_WORKSPACE" | awk 'NR == 2 { print $4 }')
-          required_kb=$((6 * 1024 * 1024))
-          df -h "$GITHUB_WORKSPACE"
-          docker system df
-          if (( available_kb < required_kb )); then
-            echo "Task 3 requires at least 6 GiB free; only ${available_kb} KiB is available" >&2
-            exit 1
-          fi
-
-      - name: Statically validate Task 3
-        run: |
-          set -euo pipefail
-          docker compose --file task3-spark/docker-compose.yml config --quiet
-          bash -n task3-spark/scripts/run-analysis.sh
-          python3 -m py_compile \
-            task3-spark/apps/*.py \
-            .github/scripts/task3_capture_spark_ui.py \
-            .github/scripts/validate_task3_outputs.py
-
-      - name: Install cloud browser runtime
-        run: |
-          set -euo pipefail
-          python3 -m pip install --disable-pip-version-check "playwright==1.55.0"
-          python3 -m playwright install --with-deps chromium
-
-      - name: Download and validate the full SNAP web-BerkStan graph
+      - name: Build, run, and verify Task 3 in Docker
         working-directory: task3-spark
+        shell: bash
         run: |
           set -euo pipefail
-          mkdir -p evidence events metrics output
-          docker compose pull dataset-init
-          docker compose run --rm --no-deps dataset-init \
-            | tee evidence/dataset-init.log
-          test -s data/web-BerkStan.txt
-          grep -Fq '7,600,595 edge rows' evidence/dataset-init.log
-          awk '!/^#/ && NF { rows++ } END { print rows + 0 }' \
-            data/web-BerkStan.txt | tee evidence/full-dataset-edge-count.txt
-          grep -Fxq '7600595' evidence/full-dataset-edge-count.txt
-          sha256sum data/web-BerkStan.txt | tee evidence/full-dataset-sha256.txt
-
-      - name: Start exactly two Spark workers
-        working-directory: task3-spark
-        run: |
-          set -euo pipefail
-          docker compose up --detach spark-master spark-worker-1 spark-worker-2
-          deadline=$((SECONDS + 180))
-          while (( SECONDS < deadline )); do
-            if curl --fail --silent http://127.0.0.1:8080/json/ \
-              > evidence/spark-master-before-analysis.json; then
-              if jq -e '
-                [.workers[] | select(.state == "ALIVE")] as $workers
-                | ($workers | length == 2)
-                  and ([$workers[] | select(.cores == 2 and .memory == 2048)] | length == 2)
-              ' evidence/spark-master-before-analysis.json >/dev/null; then
-                break
-              fi
-            fi
-            sleep 3
-          done
-          jq -e '
-            [.workers[] | select(.state == "ALIVE")] as $workers
-            | ($workers | length == 2)
-              and ([$workers[] | select(.cores == 2 and .memory == 2048)] | length == 2)
-          ' evidence/spark-master-before-analysis.json >/dev/null
-
-      - name: Process the full graph on the two-worker cluster
-        working-directory: task3-spark
-        run: |
-          set -euo pipefail
-          docker compose up --detach --no-deps run-analysis
-          analysis_id=$(docker compose ps --all --quiet run-analysis)
-          test -n "$analysis_id"
-
-          set +e
-          analysis_exit=$(timeout 25m docker wait "$analysis_id")
-          wait_status=$?
-          set -e
-          docker logs "$analysis_id" > evidence/run-analysis.log 2>&1 || true
-          if (( wait_status == 124 )); then
-            echo "Spark analysis exceeded its 25-minute bound" >&2
-            exit 1
-          fi
-          if [[ "$analysis_exit" != "0" ]]; then
-            echo "Spark analysis container exited with code $analysis_exit" >&2
-            exit 1
-          fi
-          grep -Fq 'Parsed edge rows: 7600595' evidence/run-analysis.log
-          grep -Fq 'Top-50 ranking written' evidence/run-analysis.log
-
-      - name: Validate ranking, DAG, durations, shuffle, data skew, and events
-        run: |
-          set -euo pipefail
-          python3 .github/scripts/validate_task3_outputs.py \
-            --ranking task3-spark/output/top_50_indegree.csv \
-            --metrics task3-spark/metrics/execution-metrics.json \
-            --events task3-spark/events \
-            | tee task3-spark/evidence/task3-validation.json
-
-      - name: Start History Server and capture Spark Web UIs
-        working-directory: task3-spark
-        run: |
-          set -euo pipefail
-          docker compose up --detach spark-history-server
-          cd ..
-          python3 .github/scripts/task3_capture_spark_ui.py \
-            --evidence-dir task3-spark/evidence \
-            | tee task3-spark/evidence/spark-ui-capture.log
-
-      - name: Collect Task 3 diagnostics
-        if: always()
-        working-directory: task3-spark
-        run: |
-          mkdir -p evidence
-          docker compose ps --all > evidence/docker-compose-ps.txt 2>&1 || true
-          docker compose logs --no-color > evidence/docker-compose.log 2>&1 || true
-          curl --fail --silent --show-error http://127.0.0.1:8080/json/ \
-            > evidence/spark-master-final.json 2>/dev/null || true
-          curl --fail --silent --show-error http://127.0.0.1:18080/api/v1/applications \
-            > evidence/spark-history-applications-final.json 2>/dev/null || true
-          find events -type f -not -name '.gitkeep' \
-            -exec stat --format='%A %a %U:%G %n' {} + \
-            > evidence/spark-event-log-permissions.txt 2>/dev/null || true
-          find events -type f -not -name '.gitkeep' -exec sha256sum {} + \
-            > evidence/spark-event-log-sha256.txt 2>/dev/null || true
-          df -h > evidence/runner-disk-final.txt
-          docker system df > evidence/docker-disk-final.txt 2>&1 || true
+          docker compose config --quiet
+          docker compose build --pull evidence-verifier
+          docker compose up --detach
+          docker compose wait run-analysis
+          docker compose run --rm --no-deps evidence-verifier
 
       - name: Upload Task 3 runtime evidence
         if: always()
@@ -398,5 +111,5 @@ jobs:
       - name: Clean up Task 3 containers
         if: always()
         working-directory: task3-spark
-        run: |
-          docker compose down --volumes --remove-orphans || true
+        shell: bash
+        run: docker compose down --volumes --remove-orphans || true

@@ -1,10 +1,30 @@
 name: coursework-task4-neo4j
 
 x-neo4j-image: &neo4j-image neo4j:2026.06.0
+x-python-image: &python-image python:3.12.13-alpine3.22
 
 services:
+  stage-evidence:
+    image: *python-image
+    user: "0:0"
+    restart: "no"
+    environment:
+      COURSEWORK_COMMIT_SHA: ${COURSEWORK_COMMIT_SHA:-}
+    entrypoint:
+      - python3
+      - /workspace/task4-neo4j/scripts/stage_evidence.py
+      - --repository
+      - /workspace
+      - --evidence-directory
+      - /evidence
+    volumes:
+      - ..:/workspace:ro
+      - ${TASK4_EVIDENCE_DIR:-./results}:/evidence
+    networks:
+      - neo4j-network
+
   prepare-patents:
-    image: python:3.12.13-alpine3.22
+    image: *python-image
     user: "0:0"
     restart: "no"
     entrypoint: ["python3", "/scripts/prepare_patents.py"]
@@ -22,7 +42,8 @@ services:
       prepare-patents:
         condition: service_completed_successfully
     environment:
-      NEO4J_AUTH: neo4j/coursework2026
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:?Set NEO4J_PASSWORD before running Task 4}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:?Set NEO4J_PASSWORD before running Task 4}
       NEO4J_server_directories_import: /import
       NEO4J_dbms_security_allow__csv__import__from__file__urls: "true"
     ports:
@@ -36,7 +57,7 @@ services:
       test:
         - CMD-SHELL
         - >-
-          cypher-shell -a bolt://localhost:7687 -u neo4j -p coursework2026
+          cypher-shell -a bolt://localhost:7687 -u neo4j -p "$${NEO4J_PASSWORD}"
           'RETURN 1;' >/dev/null 2>&1
       interval: 5s
       timeout: 5s
@@ -57,7 +78,7 @@ services:
     environment:
       NEO4J_URI: bolt://neo4j:7687
       NEO4J_USERNAME: neo4j
-      NEO4J_PASSWORD: coursework2026
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:?Set NEO4J_PASSWORD before running Task 4}
     entrypoint: ["/bin/bash", "/scripts/run_import.sh"]
     volumes:
       - ./scripts:/scripts:ro
@@ -75,12 +96,58 @@ services:
     environment:
       NEO4J_URI: bolt://neo4j:7687
       NEO4J_USERNAME: neo4j
-      NEO4J_PASSWORD: coursework2026
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:?Set NEO4J_PASSWORD before running Task 4}
     entrypoint: ["/bin/bash", "/scripts/run_analysis.sh"]
     volumes:
       - ./scripts:/scripts:ro
       - ./cypher:/queries:ro
-      - ./results:/results
+      - ${TASK4_EVIDENCE_DIR:-./results}:/evidence
+    networks:
+      - neo4j-network
+
+  browser-evidence:
+    build:
+      context: .
+      dockerfile: browser-evidence.Dockerfile
+    restart: "no"
+    depends_on:
+      analyze-patents:
+        condition: service_completed_successfully
+      neo4j:
+        condition: service_healthy
+    environment:
+      NEO4J_BROWSER_URL: http://neo4j:7474/browser/
+    volumes:
+      - ${TASK4_EVIDENCE_DIR:-./results}:/evidence
+    networks:
+      - neo4j-network
+
+  validate-evidence:
+    image: *python-image
+    user: "0:0"
+    restart: "no"
+    depends_on:
+      stage-evidence:
+        condition: service_completed_successfully
+      browser-evidence:
+        condition: service_completed_successfully
+      analyze-patents:
+        condition: service_completed_successfully
+    entrypoint:
+      - python3
+      - /workspace/.github/scripts/validate_task4_evidence.py
+      - --task-directory
+      - /workspace/task4-neo4j
+      - --import-directory
+      - /import
+      - --evidence-directory
+      - /evidence
+      - --report
+      - /evidence/validation-report.md
+    volumes:
+      - ..:/workspace:ro
+      - ./import:/import:ro
+      - ${TASK4_EVIDENCE_DIR:-./results}:/evidence
     networks:
       - neo4j-network
 

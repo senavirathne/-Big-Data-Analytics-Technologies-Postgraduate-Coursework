@@ -1,0 +1,8 @@
+**
+!.github/
+!.github/scripts/
+!.github/scripts/validate_task3_outputs.py
+!.github/scripts/task3_capture_spark_ui.py
+!task3-spark/
+!task3-spark/verification/
+!task3-spark/verification/**

@@ -1,0 +1,4 @@
+**
+!browser-evidence.Dockerfile
+!scripts/
+!scripts/capture_browser_evidence.sh

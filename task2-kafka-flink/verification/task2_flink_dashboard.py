@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""Deploy Task 2 through Flink's Web Dashboard and preserve browser evidence."""
+"""Deploy the coursework JAR through Flink's Web Dashboard and save evidence."""
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import time
 import urllib.request
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -20,9 +22,20 @@ PROGRAM_ARGUMENTS = "--bootstrap-servers kafka:9092 --topic traffic-telemetry"
 
 def arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--base-url", default="http://127.0.0.1:8081")
-    parser.add_argument("--jar", type=Path, required=True)
-    parser.add_argument("--evidence-dir", type=Path, required=True)
+    parser.add_argument(
+        "--base-url",
+        default=os.getenv("FLINK_BASE_URL", "http://flink-jobmanager:8081"),
+    )
+    parser.add_argument(
+        "--jar",
+        type=Path,
+        default=Path("/workspace/artifacts/traffic-window-job.jar"),
+    )
+    parser.add_argument(
+        "--evidence-dir",
+        type=Path,
+        default=Path("/workspace/evidence"),
+    )
     return parser.parse_args()
 
 
@@ -50,8 +63,18 @@ def write_page_snapshot(page: Page, target: Path) -> None:
     target.write_text(page.content(), encoding="utf-8")
 
 
+def required_source_commit() -> str:
+    source_commit = os.getenv("SOURCE_COMMIT_SHA", "")
+    if re.fullmatch(r"[0-9a-f]{40}", source_commit) is None:
+        raise ValueError(
+            "SOURCE_COMMIT_SHA must be the full lowercase 40-hex Git commit"
+        )
+    return source_commit
+
+
 def main() -> None:
     args = arguments()
+    source_commit = required_source_commit()
     jar = args.jar.resolve(strict=True)
     evidence = args.evidence_dir.resolve()
     evidence.mkdir(parents=True, exist_ok=True)
@@ -59,7 +82,9 @@ def main() -> None:
     wait_for_dashboard(base_url)
 
     audit: dict[str, Any] = {
-        "deployment_method": "Flink Web Dashboard controlled by Playwright",
+        "generated_at_utc": datetime.now(UTC).isoformat(),
+        "source_commit": source_commit,
+        "deployment_method": "Flink Web Dashboard controlled by Playwright in Docker",
         "jar": jar.name,
         "parallelism": 3,
         "program_arguments": PROGRAM_ARGUMENTS,
@@ -98,7 +123,6 @@ def main() -> None:
                 path=evidence / "flink-submit-before-upload.png", full_page=True
             )
 
-            # This is the actual file input behind the dashboard's "Add New" label.
             upload = page.locator("input#upload-file")
             upload.wait_for(state="attached")
             upload.set_input_files(str(jar))
@@ -112,9 +136,7 @@ def main() -> None:
 
             entry_class = page.locator('input[formcontrolname="entryClass"]')
             parallelism = page.locator('input[formcontrolname="parallelism"]')
-            program_arguments = page.locator(
-                'input[formcontrolname="programArgs"]'
-            )
+            program_arguments = page.locator('input[formcontrolname="programArgs"]')
             entry_class.wait_for(state="visible")
             if not entry_class.input_value().strip():
                 entry_class.fill("com.coursework.TrafficWindowJob")
@@ -148,7 +170,8 @@ def main() -> None:
             job_id = match.group(1)
             if run_response.get("status") != 200:
                 raise RuntimeError(
-                    f"Dashboard JAR run request did not return HTTP 200: {run_response}"
+                    "Dashboard JAR run request did not return HTTP 200: "
+                    f"{run_response}"
                 )
             audit.update(
                 {
@@ -188,7 +211,7 @@ def main() -> None:
             audit["console_messages"] = console_messages
             audit["failed_browser_requests"] = failed_requests
             (evidence / "flink-dashboard-audit.json").write_text(
-                json.dumps(audit, indent=2), encoding="utf-8"
+                json.dumps(audit, indent=2) + "\n", encoding="utf-8"
             )
             context.tracing.stop(path=evidence / "flink-dashboard-trace.zip")
             context.close()

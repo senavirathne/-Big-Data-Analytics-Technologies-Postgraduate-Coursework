@@ -1,0 +1,26 @@
+name: coursework-task5-validation
+
+services:
+  literature-validation:
+    build:
+      context: ..
+      dockerfile: task5-validation/Dockerfile
+    environment:
+      COURSEWORK_COMMIT_SHA: ${COURSEWORK_COMMIT_SHA:-}
+    volumes:
+      - ../ci-evidence/task5:/evidence
+    restart: "no"
+
+  literature-tests:
+    build:
+      context: ..
+      dockerfile: task5-validation/Dockerfile
+    entrypoint:
+      - python3
+      - -m
+      - unittest
+      - discover
+      - -s
+      - /opt/coursework/tests
+      - -v
+    restart: "no"

@@ -8,8 +8,10 @@ import csv
 import hashlib
 import json
 import re
+import shutil
 import struct
 from collections import Counter, defaultdict, deque
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -31,6 +33,7 @@ EXPECTED_DISTANT_PATH = (
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--task-directory", type=Path, required=True)
+    parser.add_argument("--import-directory", type=Path, required=True)
     parser.add_argument("--evidence-directory", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
     return parser.parse_args()
@@ -38,6 +41,14 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    args.evidence_directory.mkdir(parents=True, exist_ok=True)
+    prepared_csv = args.import_directory / "patent_edges_5000.csv"
+    if prepared_csv.is_file():
+        shutil.copyfile(
+            prepared_csv,
+            args.evidence_directory / "patent_edges_5000.csv",
+        )
+
     checks: list[tuple[str, bool, str]] = []
 
     def check(name: str, passed: bool, detail: str) -> None:
@@ -46,11 +57,24 @@ def main() -> int:
     query_source = (args.task_directory / "cypher/analysis_queries.cypher").read_text(
         encoding="utf-8"
     )
+    import_source = (args.task_directory / "cypher/import_patents.cypher").read_text(
+        encoding="utf-8"
+    )
 
     source_bindings = (
         ("analysis query source", "cypher/analysis_queries.cypher", "analysis_queries.cypher"),
         ("import query source", "cypher/import_patents.cypher", "import_patents.cypher"),
         ("dataset preparation source", "scripts/prepare_patents.py", "prepare_patents.py"),
+        ("import runner source", "scripts/run_import.sh", "run_import.sh"),
+        ("analysis runner source", "scripts/run_analysis.sh", "run_analysis.sh"),
+        (
+            "containerized browser capture source",
+            "scripts/capture_browser_evidence.sh",
+            "capture_browser_evidence.sh",
+        ),
+        ("source staging source", "scripts/stage_evidence.py", "stage_evidence.py"),
+        ("browser image source", "browser-evidence.Dockerfile", "browser-evidence.Dockerfile"),
+        ("Compose source", "docker-compose.yml", "docker-compose.yml"),
     )
     for name, task_relative, evidence_name in source_bindings:
         current_path = args.task_directory / task_relative
@@ -67,11 +91,89 @@ def main() -> int:
             f"Current SHA-256: `{current_digest}`; captured SHA-256: `{captured_digest}`.",
         )
 
+    repository_root = args.task_directory.parent
+    repository_bindings = (
+        (
+            "container-only CI runner source",
+            ".github/scripts/run_task4_neo4j_ci.sh",
+            "run_task4_neo4j_ci.sh",
+        ),
+        (
+            "containerized evidence validator source",
+            ".github/scripts/validate_task4_evidence.py",
+            "validate_task4_evidence.py",
+        ),
+        (
+            "Task 4 workflow source",
+            ".github/workflows/tasks-4-5.yml",
+            "tasks-4-5.yml",
+        ),
+    )
+    for name, repository_relative, evidence_name in repository_bindings:
+        current_path = repository_root / repository_relative
+        captured_path = args.evidence_directory / evidence_name
+        current_bytes = current_path.read_bytes() if current_path.is_file() else b""
+        captured_bytes = captured_path.read_bytes() if captured_path.is_file() else b""
+        current_digest = hashlib.sha256(current_bytes).hexdigest() if current_bytes else "missing"
+        captured_digest = (
+            hashlib.sha256(captured_bytes).hexdigest() if captured_bytes else "missing"
+        )
+        check(
+            f"Runtime evidence is bound to current {name}",
+            bool(current_bytes) and current_bytes == captured_bytes,
+            f"Current SHA-256: `{current_digest}`; captured SHA-256: `{captured_digest}`.",
+        )
+
+    revision_path = args.evidence_directory / "source-revision.json"
+    revision: dict[str, object] = {}
+    try:
+        parsed_revision = json.loads(revision_path.read_text(encoding="utf-8"))
+        if isinstance(parsed_revision, dict):
+            revision = parsed_revision
+    except (OSError, json.JSONDecodeError):
+        revision = {}
+    source_commit = revision.get("source_commit")
+    checked_out_head = revision.get("checked_out_head")
+    supplied_commit = revision.get("ci_supplied_commit")
+    commit_ok = bool(
+        isinstance(source_commit, str)
+        and re.fullmatch(r"[0-9a-f]{40}", source_commit)
+        and (checked_out_head is None or checked_out_head == source_commit)
+        and (supplied_commit is None or supplied_commit == source_commit)
+    )
+    check(
+        "Evidence is bound to one complete source commit",
+        commit_ok,
+        f"Source commit: `{source_commit or 'missing'}`; checked-out HEAD: "
+        f"`{checked_out_head or 'not resolved'}`; CI-supplied commit: "
+        f"`{supplied_commit or 'not supplied'}`.",
+    )
+
     profile_count = len(re.findall(r"(?m)^\s*PROFILE\s*$", query_source))
     check(
         "Exactly three PROFILE analyses",
         profile_count == 3,
         f"Found {profile_count} PROFILE statements.",
+    )
+
+    dataset_marker = "snap-cit-Patents-first-5000-v1"
+    check(
+        "Import is idempotent and scoped to the coursework dataset",
+        "DETACH DELETE" not in import_source
+        and "MERGE (source)-[:CITES" in import_source
+        and "coursework_edge" in import_source
+        and dataset_marker in import_source,
+        "The import must use a stable dataset/edge identity and must not globally delete Patent nodes.",
+    )
+    check(
+        "All three analyses are scoped to the imported subset",
+        len(re.split(r"(?m)^\s*PROFILE\s*$", query_source)[1:]) == 3
+        and all(
+            dataset_marker in section
+            for section in re.split(r"(?m)^\s*PROFILE\s*$", query_source)[1:]
+        ),
+        "Each PROFILE statement must reference the coursework dataset marker; "
+        f"total marker occurrences: {query_source.count(dataset_marker)}.",
     )
 
     required_query_markers = {
@@ -153,6 +255,35 @@ def main() -> int:
         type_ok,
         f"Count: {relationship_type_rows[1][0] if len(relationship_type_rows) == 2 else 'missing'}; "
         f"types: {parsed_types if parsed_types is not None else 'missing'}.",
+    )
+
+    import_scope_path = args.evidence_directory / "import-scope.txt"
+    import_scope_rows: list[list[str]] = []
+    if import_scope_path.is_file():
+        try:
+            with import_scope_path.open(newline="", encoding="utf-8") as source:
+                import_scope_rows = list(csv.reader(source, skipinitialspace=True))
+        except (OSError, csv.Error):
+            import_scope_rows = []
+    scope_ok = False
+    if (
+        len(import_scope_rows) == 2
+        and import_scope_rows[0] == ["all_cites", "coursework_cites", "unrelated_cites"]
+        and len(import_scope_rows[1]) == 3
+    ):
+        try:
+            all_cites, coursework_cites, unrelated_cites = map(int, import_scope_rows[1])
+            scope_ok = (
+                coursework_cites == EDGE_LIMIT
+                and all_cites >= coursework_cites
+                and unrelated_cites == all_cites - coursework_cites
+            )
+        except ValueError:
+            scope_ok = False
+    check(
+        "Runtime count distinguishes coursework and unrelated CITES data",
+        scope_ok,
+        f"Parsed runtime rows: {import_scope_rows or 'missing'}.",
     )
 
     execution_path = args.evidence_directory / "query-execution.txt"
@@ -295,6 +426,26 @@ def main() -> int:
         f"Browser-rendered DOM bytes: {len(browser_dom.encode('utf-8'))}.",
     )
 
+    browser_headers_path = args.evidence_directory / "neo4j-browser-headers.txt"
+    browser_headers = (
+        browser_headers_path.read_text(encoding="utf-8", errors="replace")
+        if browser_headers_path.is_file()
+        else ""
+    )
+    browser_http_path = args.evidence_directory / "neo4j-browser-http.html"
+    browser_http = (
+        browser_http_path.read_text(encoding="utf-8", errors="replace")
+        if browser_http_path.is_file()
+        else ""
+    )
+    check(
+        "Neo4j Browser HTTP response captured inside the Compose network",
+        bool(re.search(r"(?mi)^HTTP/\S+\s+200\b", browser_headers))
+        and bool(re.search(r"neo4j", browser_http, flags=re.IGNORECASE)),
+        f"Header bytes: {len(browser_headers.encode('utf-8'))}; response body bytes: "
+        f"{len(browser_http.encode('utf-8'))}.",
+    )
+
     screenshot_path = args.evidence_directory / "neo4j-browser.png"
     screenshot_ok = False
     screenshot_detail = "Screenshot was not produced."
@@ -326,13 +477,63 @@ def main() -> int:
     lines.extend(
         [
             "",
-            "The CSV, Cypher source, verbose PROFILE output, container logs, runtime counts,",
-            "browser-rendered DOM, and screenshot are stored beside this report.",
+            "The CSV, Cypher source, verbose PROFILE output, runtime counts,",
+            "browser-rendered DOM, screenshot, source revision, and evidence manifest are stored",
+            "beside this report.",
             "",
         ]
     )
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text("\n".join(lines), encoding="utf-8")
+
+    manifest_files = sorted(
+        {
+            evidence_name for _, _, evidence_name in source_bindings
+        }
+        | {
+            evidence_name for _, _, evidence_name in repository_bindings
+        }
+        | {
+            "source-revision.json",
+            "patent_edges_5000.csv",
+            "query-execution.txt",
+            "relationship-count.txt",
+            "relationship-types.txt",
+            "import-scope.txt",
+            "neo4j-browser-headers.txt",
+            "neo4j-browser-http.html",
+            "neo4j-browser-dom.html",
+            "neo4j-browser-console.log",
+            "neo4j-browser.png",
+            args.report.name,
+        }
+    )
+    artifacts: dict[str, dict[str, object]] = {}
+    for name in manifest_files:
+        path = args.evidence_directory / name
+        if path.is_file():
+            payload = path.read_bytes()
+            artifacts[name] = {
+                "bytes": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }
+        else:
+            artifacts[name] = {"bytes": None, "sha256": None}
+
+    manifest = {
+        "schema_version": 1,
+        "task": "Coventry Big Data Analytics coursework Task 4",
+        "source_commit": source_commit,
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "validation_status": "PASS" if failed == 0 else "FAIL",
+        "checks_passed": passed,
+        "checks_failed": failed,
+        "artifacts": artifacts,
+    }
+    (args.evidence_directory / "evidence-manifest.json").write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     return 0 if failed == 0 else 1
 
 

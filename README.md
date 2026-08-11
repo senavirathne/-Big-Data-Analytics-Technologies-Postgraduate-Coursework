@@ -10,4 +10,8 @@ This repository contains the containerized implementations and academic review r
 | 4 — Neo4j | [`task4-neo4j/`](task4-neo4j/) | [Tasks 4–5 workflow](.github/workflows/tasks-4-5.yml) |
 | 5 — Literature review | [`task5-literature-review.md`](task5-literature-review.md) | [Tasks 4–5 workflow](.github/workflows/tasks-4-5.yml) |
 
-The GitHub Actions jobs run Tasks 2–4 on separate Docker-capable Ubuntu runners and upload reproducible runtime evidence. Task 5 receives deterministic structure, coverage, citation, DOI, and authoritative-link checks. Generated datasets, database state, and evidence are intentionally excluded from Git history and should be downloaded from the workflow artifacts into the local workspace after successful runs.
+The GitHub Actions jobs run and verify Tasks 2–5 through Docker Compose and upload
+evidence tied to the exact source commit. Generated datasets, database state, and
+runtime evidence are intentionally excluded from Git history. Follow
+[`SUBMISSION-RUNBOOK.md`](SUBMISSION-RUNBOOK.md) to create the final evidence and
+check the remaining work that must be done in a Docker-capable environment.

@@ -1,0 +1,2 @@
+kafka-python==2.2.15
+playwright==1.55.0

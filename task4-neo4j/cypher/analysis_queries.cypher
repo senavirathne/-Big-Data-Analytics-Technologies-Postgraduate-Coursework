@@ -1,7 +1,9 @@
 // Query 1 — Direct-neighbor layer for the explicit target patent 3858514.
 // PROFILE records the operator plan, rows, database hits, and elapsed behavior.
 PROFILE
-MATCH (target:Patent {id: 3858514})-[edge:CITES]-(neighbor:Patent)
+MATCH (target:Patent {id: 3858514})-[edge:CITES {
+  coursework_dataset: 'snap-cit-Patents-first-5000-v1'
+}]-(neighbor:Patent)
 RETURN target.id AS target_patent,
        neighbor.id AS direct_neighbor,
        CASE
@@ -14,7 +16,14 @@ ORDER BY direct_neighbor ASC, neighbor_direction ASC;
 // ordering deterministically identifies the ten most-cited patents in the subset.
 PROFILE
 MATCH (patent:Patent)
-OPTIONAL MATCH (:Patent)-[incoming:CITES]->(patent)
+WHERE EXISTS {
+  MATCH (patent)-[:CITES {
+    coursework_dataset: 'snap-cit-Patents-first-5000-v1'
+  }]-()
+}
+OPTIONAL MATCH (:Patent)-[incoming:CITES {
+  coursework_dataset: 'snap-cit-Patents-first-5000-v1'
+}]->(patent)
 WITH patent, count(incoming) AS in_degree
 ORDER BY in_degree DESC, patent.id ASC
 LIMIT 10
@@ -27,7 +36,9 @@ ORDER BY in_degree DESC, patent_id ASC;
 // PROFILE documents traversal behavior.
 PROFILE
 MATCH (start:Patent {id: 3484134}), (finish:Patent {id: 253889})
-MATCH path = ANY SHORTEST (start)-[:CITES]-{1,15}(finish)
+MATCH path = ANY SHORTEST (start)-[:CITES {
+  coursework_dataset: 'snap-cit-Patents-first-5000-v1'
+}]-{1,15}(finish)
 RETURN start.id AS start_patent,
        finish.id AS finish_patent,
        length(path) AS hop_count,

@@ -1,42 +1,56 @@
 # Task 2: Kafka and Flink traffic telemetry
 
-Build the uploadable Java job JAR and start the fully containerized KRaft Kafka broker,
-Austin producer, Flink JobManager, and TaskManager:
+All coursework services and verification tools run in Docker. The host needs only Docker
+Engine, Docker Compose 2.30.0 or newer, and enough free space for the images. No host Python,
+Playwright, browser, `curl`, `jq`, Java, Maven, Kafka, or Flink installation is used.
+
+## Run and capture evidence
+
+Run these commands from this directory. Replace the example value with the exact lowercase
+40-character Git commit being assessed, and use the same value in all three commands that
+set it. The dashboard and verifier reject a missing, abbreviated, or uppercase value:
 
 ```sh
-docker compose up --build
+docker compose run --build --rm flink-job-build
+docker compose up --build --detach --wait kafka flink-jobmanager flink-taskmanager
+SOURCE_COMMIT_SHA=0123456789abcdef0123456789abcdef01234567 docker compose run --build --rm flink-dashboard-runner
+SOURCE_COMMIT_SHA=0123456789abcdef0123456789abcdef01234567 docker compose up --detach --wait traffic-producer
+SOURCE_COMMIT_SHA=0123456789abcdef0123456789abcdef01234567 docker compose run --build --rm task2-evidence-verifier
 ```
 
-The Kafka service's Compose `post_start` hook waits for the broker and then runs
-`kafka-topics.sh --create` **inside the running broker container**. The broker is not marked
-healthy until `traffic-telemetry` has exactly three partitions and replication factor one,
-so the producer cannot start before the topic is ready. This hook requires Docker Compose
-2.30.0 or newer. Verify the topic from the same Kafka container:
+The first command creates a fresh `artifacts/traffic-window-job.jar` from the checked-out
+source. The second starts one KRaft Kafka broker, one Flink JobManager, and one three-slot
+TaskManager. The third uses a browser **inside the `flink-dashboard-runner` container** to
+upload and submit the JAR through the Flink Web Dashboard. It records the configured
+parallelism (`3`), program arguments, browser trace, HTML, and screenshots in `evidence/`.
+
+The producer retrieves the assigned City of Austin dataset and publishes structured JSON
+every two seconds. It uses `atd_device_id`, historical `read_date`, and `volume` as sensor ID,
+event time, and vehicle count. The Kafka service creates `traffic-telemetry` inside the broker
+with exactly three partitions and replication factor one before the producer can start.
+
+The final command validates the JAR manifest and checksum, Kafka topology, Flink topology,
+Dashboard submission, five genuine structured messages, the running job, and at least one
+genuine 10-minute event-time window result. It reaches Kafka and Flink only through the
+internal `telemetry-network`; even Flink TaskManager logs are read through Flink's internal
+REST endpoint. A successful run writes `evidence/task2-validation.json` and a checksum list
+bound to `SOURCE_COMMIT_SHA` in `evidence/task2-evidence-manifest.json`.
+
+The validation may take several minutes because publication is deliberately limited to one
+record every two seconds. To allow more than the default 900 seconds for a genuine window,
+set `TASK2_EVIDENCE_TIMEOUT_SECONDS` on the verifier invocation.
+
+## Coursework behavior
+
+The Java DataStream job allows 10 seconds of bounded out-of-orderness, keys events by sensor,
+and prints vehicle-count totals from 10-minute tumbling event-time windows. Submission is
+performed through the Web Dashboard rather than Flink's command-line job submission.
+
+For an optional live view while the containers are running, open `http://localhost:8081`.
+This is not needed by the containerized verifier.
+
+Stop and remove the Task 2 containers after preserving `artifacts/` and `evidence/`:
 
 ```sh
-docker compose exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --describe --topic traffic-telemetry
-```
-
-The producer retrieves the assigned City of Austin dataset, emits structured JSON every two
-seconds, and uses `atd_device_id`, historical `read_date`, and `volume` as sensor ID, event
-time, and vehicle count.
-
-The `flink-job-build` container writes the shaded job bundle to
-`artifacts/traffic-window-job.jar`. Deploy that bundle through the Flink console dashboard:
-
-1. Open `http://localhost:8081` and select **Submit New Job**.
-2. Select **Add New**, then upload `artifacts/traffic-window-job.jar`.
-3. Select the uploaded JAR. Set **Program Arguments** to
-   `--bootstrap-servers kafka:9092 --topic traffic-telemetry`, set parallelism to `3`, and
-   submit the job.
-
-The Java DataStream job explicitly allows 10 seconds of bounded out-of-orderness, keys events
-by sensor, and continuously prints moving vehicle-count totals from 10-minute tumbling
-event-time windows. No command-line submission is performed; the steps above are the job
-deployment through the Flink console dashboard required by the brief.
-
-Window output is written by the print sink in the TaskManager logs:
-
-```sh
-docker compose logs --follow flink-taskmanager
+docker compose down --volumes --remove-orphans
 ```
