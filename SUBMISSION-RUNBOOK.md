@@ -98,7 +98,8 @@ cd ..
 
 Keep `task2-kafka-flink/artifacts/traffic-window-job.jar` and the contents of
 `task2-kafka-flink/evidence/`. The live verifier deliberately waits for genuine
-two-second Kafka messages and a completed 10-minute event-time window.
+two-second Kafka messages and a completed 15-minute event-time window aligned
+to the 10-minute slide.
 
 ### Task 3
 

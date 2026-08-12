@@ -31,10 +31,11 @@ with exactly three partitions and replication factor one before the producer can
 
 The final command validates the JAR manifest and checksum, Kafka topology, Flink topology,
 Dashboard submission, five genuine structured messages, the running job, and at least one
-genuine 10-minute event-time window result. It reaches Kafka and Flink only through the
-internal `telemetry-network`; even Flink TaskManager logs are read through Flink's internal
-REST endpoint. A successful run writes `evidence/task2-validation.json` and a checksum list
-bound to `SOURCE_COMMIT_SHA` in `evidence/task2-evidence-manifest.json`.
+genuine 15-minute event-time window result aligned to the 10-minute slide. It reaches Kafka
+and Flink only through the internal `telemetry-network`; even Flink TaskManager logs are read
+through Flink's internal REST endpoint. A successful run writes
+`evidence/task2-validation.json` and a checksum list bound to `SOURCE_COMMIT_SHA` in
+`evidence/task2-evidence-manifest.json`.
 
 The validation may take several minutes because publication is deliberately limited to one
 record every two seconds. To allow more than the default 900 seconds for a genuine window,
@@ -43,8 +44,17 @@ set `TASK2_EVIDENCE_TIMEOUT_SECONDS` on the verifier invocation.
 ## Coursework behavior
 
 The Java DataStream job allows 10 seconds of bounded out-of-orderness, keys events by sensor,
-and prints vehicle-count totals from 10-minute tumbling event-time windows. Submission is
-performed through the Web Dashboard rather than Flink's command-line job submission.
+and prints vehicle-count totals from 15-minute sliding event-time windows that start every
+10 minutes. Each result therefore covers a 15-minute interval, while overlapping results
+provide the required 10-minute moving update cadence. The cadence follows event time and
+watermark progress, not ten minutes of wall-clock execution. Submission is performed through
+the Web Dashboard rather than Flink's command-line job submission.
+
+Interpretation note: the supplied brief also uses the precise phrase “10-minute tumbling
+window.” This implementation intentionally prioritizes its “moving total” wording and the
+Austin source's 15-minute resolution. Because each source row is already a 15-minute aggregate
+timestamped at its interval start, Flink treats it as one event and may include it in two
+overlapping results; the job does not prorate a row across its physical measurement interval.
 
 For an optional live view while the containers are running, open `http://localhost:8081`.
 This is not needed by the containerized verifier.

@@ -15,8 +15,7 @@ import org.apache.flink.connector.kafka.source.enumerator.initializer.OffsetsIni
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.windowing.ProcessWindowFunction;
-import org.apache.flink.streaming.api.windowing.assigners.TumblingEventTimeWindows;
-import org.apache.flink.streaming.api.windowing.time.Time;
+import org.apache.flink.streaming.api.windowing.assigners.SlidingEventTimeWindows;
 import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
 import org.apache.flink.util.Collector;
 
@@ -64,13 +63,17 @@ public final class TrafficWindowJob {
                 .assignTimestampsAndWatermarks(watermarkStrategy)
                 .name("ten-second-bounded-out-of-orderness")
                 .keyBy(TrafficEvent::getSensorId)
-                .window(TumblingEventTimeWindows.of(Time.minutes(10)))
+                .window(
+                        SlidingEventTimeWindows.of(
+                                Duration.ofMinutes(15),
+                                Duration.ofMinutes(10)))
                 .aggregate(new VehicleCountSum(), new FormatWindowTotal())
-                .name("ten-minute-moving-total-by-sensor")
+                .name("fifteen-minute-total-sliding-every-ten-minutes-by-sensor")
                 .print()
-                .name("print-ten-minute-sensor-totals");
+                .name("print-fifteen-minute-sliding-sensor-totals");
 
-        environment.execute("Austin traffic telemetry: 10-minute sensor totals");
+        environment.execute(
+                "Austin traffic telemetry: 15-minute totals sliding every 10 minutes");
     }
 
     public static class TrafficEvent {

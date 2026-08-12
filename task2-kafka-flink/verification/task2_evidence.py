@@ -18,7 +18,7 @@ from kafka import KafkaConsumer
 from kafka.admin import KafkaAdminClient
 
 
-JOB_NAME = "Austin traffic telemetry: 10-minute sensor totals"
+JOB_NAME = "Austin traffic telemetry: 15-minute totals sliding every 10 minutes"
 PROGRAM_ARGUMENTS = "--bootstrap-servers kafka:9092 --topic traffic-telemetry"
 REQUIRED_MESSAGE_FIELDS = {
     "record_id",
@@ -79,7 +79,9 @@ def validate_coursework_source() -> dict[str, Any]:
     required_fragments = {
         "flink-job/src/main/java/com/coursework/TrafficWindowJob.java": [
             "Duration.ofSeconds(10)",
-            "TumblingEventTimeWindows.of(Time.minutes(10))",
+            "SlidingEventTimeWindows.of(",
+            "Duration.ofMinutes(15)",
+            "Duration.ofMinutes(10)",
             ".keyBy(TrafficEvent::getSensorId)",
             ".print()",
         ],
@@ -328,8 +330,14 @@ def window_documents(lines: list[str]) -> list[dict[str, Any]]:
         if start == -1:
             continue
         document, _ = decoder.raw_decode(line[start:])
-        if document.get("window_end_ms", 0) - document.get("window_start_ms", 0) != 600_000:
-            raise AssertionError(f"Window is not exactly 10 minutes: {document!r}")
+        window_start_ms = document.get("window_start_ms", 0)
+        window_end_ms = document.get("window_end_ms", 0)
+        if window_end_ms - window_start_ms != 900_000:
+            raise AssertionError(f"Window is not exactly 15 minutes: {document!r}")
+        if window_start_ms % 600_000 != 0:
+            raise AssertionError(
+                f"Window is not aligned to the 10-minute slide: {document!r}"
+            )
         if not isinstance(document.get("vehicle_count_total"), int):
             raise AssertionError(f"Window total is not an integer: {document!r}")
         documents.append(document)
@@ -381,7 +389,8 @@ def wait_for_window_result(job_id: str, taskmanager_id: str) -> list[dict[str, A
             )
         time.sleep(5)
     raise TimeoutError(
-        f"No genuine 10-minute event-time result appeared within {TIMEOUT_SECONDS} seconds"
+        "No genuine 15-minute event-time result from the 10-minute slide appeared "
+        f"within {TIMEOUT_SECONDS} seconds"
     )
 
 
@@ -456,10 +465,12 @@ def main() -> None:
         details = validate_running_job(job_id)
         checks["running_job"] = {"name": details["name"], "state": details["state"]}
         results = wait_for_window_result(job_id, taskmanagers[0]["id"])
-        checks["ten_minute_window"] = {
+        checks["fifteen_minute_sliding_window"] = {
             "result_count": len(results),
             "vehicle_count_total_present": True,
-            "window_duration_ms": 600_000,
+            "window_duration_ms": 900_000,
+            "configured_window_slide_ms": 600_000,
+            "runtime_boundary_aligned_to_slide": True,
         }
         write_json("task2-validation.json", {"status": "PASS", "checks": checks})
         write_evidence_manifest("PASS", checks)

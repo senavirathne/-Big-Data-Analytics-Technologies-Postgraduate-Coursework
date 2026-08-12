@@ -16,7 +16,7 @@ from typing import Any
 from playwright.sync_api import Page, sync_playwright
 
 
-JOB_NAME = "Austin traffic telemetry: 10-minute sensor totals"
+JOB_NAME = "Austin traffic telemetry: 15-minute totals sliding every 10 minutes"
 PROGRAM_ARGUMENTS = "--bootstrap-servers kafka:9092 --topic traffic-telemetry"
 
 
