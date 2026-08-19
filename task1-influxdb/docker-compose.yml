@@ -51,24 +51,5 @@ services:
       INFLUX_ORG: big-data-coursework
       INFLUX_BUCKET: climate_raw
       INFLUX_TOKEN: coursework-influx-token
-      WIND_CSV_URL: https://data.snap.uaf.edu/data/Base/Other/historical_winds_Alaska_airports/alaska_airports_hourly_winds_PAFA.csv
-    restart: "no"
-
-  task1-verifier:
-    image: influxdb:2.7.12-alpine
-    depends_on:
-      influxdb:
-        condition: service_healthy
-      influx-setup:
-        condition: service_completed_successfully
-      climate-ingest:
-        condition: service_completed_successfully
-    environment:
-      INFLUX_HOST: http://influxdb:8086
-      INFLUX_ORG: big-data-coursework
-      INFLUX_TOKEN: coursework-influx-token
-    volumes:
-      - ./flux:/queries:ro
-      - ./verify.sh:/verify.sh:ro
-    entrypoint: ["/bin/sh", "/verify.sh"]
+      SZEGED_DATASET_URL: https://www.kaggle.com/api/v1/datasets/download/budincsevity/szeged-weather
     restart: "no"

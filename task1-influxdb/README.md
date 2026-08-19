@@ -1,83 +1,76 @@
 # Task 1: Distributed time-series data management with InfluxDB
 
-This directory is the complete Task 1 implementation. Every application runtime and
-third-party dependency runs in Docker. The only host requirements are Docker Engine and
-Docker Compose.
+This directory implements the three Task 1 requirements using InfluxDB 2.x and the
+Szeged Weather dataset. Docker Engine and Docker Compose are the only host requirements.
 
-## Dataset and schema
+## Step 1.1: Containerized environment
 
-The ingestion container streams exactly this assigned dataset:
+[`docker-compose.yml`](docker-compose.yml) defines:
 
-<https://data.snap.uaf.edu/data/Base/Other/historical_winds_Alaska_airports/alaska_airports_hourly_winds_PAFA.csv>
+- an InfluxDB 2.7 container exposed at <http://localhost:8086>;
+- persistent host storage at `./data/influxdb2`, mounted at `/var/lib/influxdb2`;
+- automatic setup of the `big-data-coursework` organization and the unlimited-retention
+  `climate_raw` bucket;
+- an `influx-setup` service that creates the `climate_30d` auxiliary bucket with an
+  explicit `720h` (30-day) retention rule and registers the required recurring
+  downsampling task; and
+- a `climate-ingest` service that downloads and ingests the assigned dataset.
 
-The source has the columns `ts`, `ws`, and `wd`, representing the original timestamp,
-wind speed, and wind direction for airport station PAFA. It contains 345,587 observations
-from `1980-01-01 08:00:00` through `2019-12-31 00:00:00`. Some source rows have no `wd`;
-those points retain `ws` and omit only the absent field.
-
-InfluxDB requires an absolute instant. Because the source supplies no offset, the importer
-encodes the displayed `ts` clock value as UTC. It never calls the deployment clock. Each
-row becomes an `airport_wind` point tagged with `station=PAFA`, with numeric `ws` and,
-where present, `wd` fields. Writes use the official Python `influxdb-client`, explicit
-nanosecond timestamps, and batches of 5,000 line-protocol records.
-
-## Provision and ingest
-
-From this directory, run:
+Start the environment from this directory:
 
 ```sh
 docker compose up --build
 ```
 
-The Compose topology:
+## Step 1.2: Szeged schema and ingestion
 
-- runs InfluxDB 2.7 on `http://localhost:8086`;
-- binds `./data/influxdb2` on the host to `/var/lib/influxdb2` in the container;
-- automatically bootstraps the `big-data-coursework` organization and primary
-  `climate_raw` bucket;
-- creates the auxiliary `climate_30d` bucket with an explicit `720h` (30-day) retention
-  rule; and
-- streams, validates, parses, converts, batches, and writes every CSV row from the exact
-  URL above; then executes and verifies all three required Flux operations in a dedicated
-  container.
+The implementation uses the coursework's [Weather in Szeged 2006–2016](https://www.kaggle.com/datasets/budincsevity/szeged-weather/data)
+dataset. The ingestion service downloads the official Kaggle ZIP, opens
+`weatherHistory.csv`, and parses its 96,453 records line by line.
 
-Successful ingestion ends with:
+Each source timestamp includes either a `+0100` or `+0200` offset. The importer parses
+that offset and writes the corresponding UTC instant at nanosecond precision; it never
+substitutes the container's current clock.
+
+The InfluxDB schema is:
+
+| CSV value | InfluxDB mapping |
+|---|---|
+| Szeged, Hungary | tag `location=Szeged` |
+| `Formatted Date` | point timestamp |
+| `Temperature (C)` | field `temperature_c` |
+| `Apparent Temperature (C)` | field `apparent_temperature_c` |
+| `Humidity` | field `humidity` |
+| `Wind Speed (km/h)` | field `wind_speed_kmh` |
+| `Wind Bearing (degrees)` | field `wind_bearing_degrees` |
+| `Visibility (km)` | field `visibility_km` |
+| `Loud Cover` | field `cloud_cover` |
+| `Pressure (millibars)` | field `pressure_millibars` |
+| `Summary`, `Precip Type`, `Daily Summary` | string fields with normalized names |
+
+All values use the `weather` measurement and are written through the official Python
+`influxdb-client` in batches of 5,000 line-protocol records. Successful ingestion prints:
 
 ```text
-ingested 345587 PAFA historical wind records
+ingested 96453 Szeged weather records
 ```
 
-Successful containerized verification ends with:
+The source contains 24 byte-identical duplicate rows. InfluxDB's measurement, tag, and
+timestamp identity makes those writes idempotent, leaving 96,429 distinct weather points
+without changing any source timestamps.
 
-```text
-PASS: all three Flux operations executed; task and 30-day retention verified
-```
+## Step 1.3: Flux analytical queries
 
-Keep InfluxDB running and use a second terminal for the commands below.
+The `flux/` directory contains exactly the three required operations:
 
-## The three required Flux operations
+1. `01_sliding_hourly_average.flux` calculates sliding one-hour temperature averages
+   with a 15-minute window stride across the full 2006–2016 observation span.
+2. `02_two_sigma_anomalies.flux` calculates the population mean and standard deviation
+   for temperature, then returns observations strictly outside `mean ± 2σ`.
+3. `03_continuous_downsample.flux` runs every hour and writes hourly temperature means
+   into the `climate_30d` bucket.
 
-There are exactly three coursework Flux scripts in `flux/`.
-
-1. `01_sliding_hourly_average.flux` calculates one-hour moving means every 15 minutes
-   across the full historical observation span.
-2. `02_two_sigma_anomalies.flux` calculates the full-dataset mean and population standard
-   deviation independently for each source field, then returns values strictly outside
-   `mean ± (2 * standard deviation)`.
-3. `03_continuous_downsample.flux` is registered automatically as the hourly recurring
-   task `climate-hourly-downsample-30d`; it continuously writes one-hour means for each
-   new task window to `climate_30d`.
-
-InfluxDB evaluates retention against its current clock. The assigned observations end in
-2019, so in 2026 their downsampled timestamps are already outside a 30-day retention
-policy and cannot remain in `climate_30d`. The recurring task therefore uses the standard
-relative `-task.every` input window: it is active and correct for in-window records, while
-the complete 1980–2019 history remains in the unlimited-retention primary bucket. The
-pipeline deliberately does not relabel old source records with current timestamps merely
-to bypass retention.
-
-The verifier executes these operations automatically. They can also be repeated manually
-with the InfluxDB CLI inside its container:
+Execute the first two analytical queries with the InfluxDB CLI:
 
 ```sh
 docker compose exec influxdb influx query \
@@ -91,7 +84,7 @@ docker compose exec influxdb influx query \
   --file /queries/02_two_sigma_anomalies.flux
 ```
 
-Confirm the third operation and its auxiliary bucket retention policy:
+Confirm the recurring downsampling task and the 30-day bucket rule:
 
 ```sh
 docker compose exec influxdb influx task list \
@@ -103,12 +96,7 @@ docker compose exec influxdb influx bucket list \
   --token coursework-influx-token
 ```
 
-For an immediate execution of the same downsampling operation, without waiting for
-its next hourly schedule, run:
-
-```sh
-docker compose exec influxdb influx query \
-  --org big-data-coursework \
-  --token coursework-influx-token \
-  --file /queries/03_continuous_downsample.flux
-```
+The dataset ends in 2016. Therefore, its original historical timestamps cannot remain in
+a bucket that retains only the most recent 30 days. The recurring task is correctly
+configured for new in-window data; the unlimited `climate_raw` bucket preserves the
+complete historical dataset as required.

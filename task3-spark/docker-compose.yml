@@ -4,7 +4,6 @@ x-spark-image: &spark-image apache/spark:3.5.8-scala2.12-java17-python3-ubuntu
 
 x-worker-common: &worker-common
   image: *spark-image
-  restart: unless-stopped
   depends_on:
     spark-master:
       condition: service_started
@@ -23,7 +22,6 @@ services:
   dataset-init:
     image: *spark-image
     user: "0:0"
-    restart: "no"
     entrypoint: ["python3", "/opt/coursework/apps/download_data.py"]
     volumes:
       - ./apps:/opt/coursework/apps:ro
@@ -34,7 +32,6 @@ services:
   spark-master:
     image: *spark-image
     hostname: spark-master
-    restart: unless-stopped
     command:
       - /opt/spark/bin/spark-class
       - org.apache.spark.deploy.master.Master
@@ -45,7 +42,6 @@ services:
       - --webui-port
       - "8080"
     ports:
-      - "7077:7077"
       - "8080:8080"
     networks:
       - spark-network
@@ -85,7 +81,6 @@ services:
   spark-history-server:
     image: *spark-image
     hostname: spark-history-server
-    restart: unless-stopped
     depends_on:
       spark-master:
         condition: service_started
@@ -107,7 +102,6 @@ services:
   run-analysis:
     image: *spark-image
     user: "0:0"
-    restart: "no"
     depends_on:
       dataset-init:
         condition: service_completed_successfully
@@ -125,32 +119,6 @@ services:
       - ./events:/opt/spark-events
       - ./metrics:/metrics
       - ./output:/output
-    networks:
-      - spark-network
-
-  evidence-verifier:
-    profiles:
-      - verification
-    build:
-      context: ..
-      dockerfile: task3-spark/verification/Dockerfile
-    user: "0:0"
-    restart: "no"
-    depends_on:
-      spark-history-server:
-        condition: service_started
-      run-analysis:
-        condition: service_completed_successfully
-    environment:
-      COURSEWORK_COMMIT_SHA: "${COURSEWORK_COMMIT_SHA:-}"
-      SPARK_MASTER_URL: http://spark-master:8080
-      SPARK_HISTORY_URL: http://spark-history-server:18080
-    shm_size: 1gb
-    volumes:
-      - ./events:/events:ro
-      - ./metrics:/metrics:ro
-      - ./output:/output:ro
-      - ./evidence:/evidence
     networks:
       - spark-network
 

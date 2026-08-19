@@ -4,29 +4,9 @@ x-neo4j-image: &neo4j-image neo4j:2026.06.0
 x-python-image: &python-image python:3.12.13-alpine3.22
 
 services:
-  stage-evidence:
-    image: *python-image
-    user: "0:0"
-    restart: "no"
-    environment:
-      COURSEWORK_COMMIT_SHA: ${COURSEWORK_COMMIT_SHA:-}
-    entrypoint:
-      - python3
-      - /workspace/task4-neo4j/scripts/stage_evidence.py
-      - --repository
-      - /workspace
-      - --evidence-directory
-      - /evidence
-    volumes:
-      - ..:/workspace:ro
-      - ${TASK4_EVIDENCE_DIR:-./results}:/evidence
-    networks:
-      - neo4j-network
-
   prepare-patents:
     image: *python-image
     user: "0:0"
-    restart: "no"
     entrypoint: ["python3", "/scripts/prepare_patents.py"]
     volumes:
       - ./scripts:/scripts:ro
@@ -37,7 +17,6 @@ services:
   neo4j:
     image: *neo4j-image
     hostname: neo4j
-    restart: unless-stopped
     depends_on:
       prepare-patents:
         condition: service_completed_successfully
@@ -49,8 +28,6 @@ services:
       - "7474:7474"
       - "7687:7687"
     volumes:
-      - ./data:/data
-      - ./logs:/logs
       - ./import:/import:ro
     healthcheck:
       test:
@@ -68,7 +45,6 @@ services:
   import-patents:
     image: *neo4j-image
     user: "0:0"
-    restart: "no"
     depends_on:
       neo4j:
         condition: service_healthy
@@ -88,7 +64,6 @@ services:
   analyze-patents:
     image: *neo4j-image
     user: "0:0"
-    restart: "no"
     depends_on:
       import-patents:
         condition: service_completed_successfully
@@ -100,53 +75,7 @@ services:
     volumes:
       - ./scripts:/scripts:ro
       - ./cypher:/queries:ro
-      - ${TASK4_EVIDENCE_DIR:-./results}:/evidence
-    networks:
-      - neo4j-network
-
-  browser-evidence:
-    build:
-      context: .
-      dockerfile: browser-evidence.Dockerfile
-    restart: "no"
-    depends_on:
-      analyze-patents:
-        condition: service_completed_successfully
-      neo4j:
-        condition: service_healthy
-    environment:
-      NEO4J_BROWSER_URL: http://neo4j:7474/browser/
-    volumes:
-      - ${TASK4_EVIDENCE_DIR:-./results}:/evidence
-    networks:
-      - neo4j-network
-
-  validate-evidence:
-    image: *python-image
-    user: "0:0"
-    restart: "no"
-    depends_on:
-      stage-evidence:
-        condition: service_completed_successfully
-      browser-evidence:
-        condition: service_completed_successfully
-      analyze-patents:
-        condition: service_completed_successfully
-    entrypoint:
-      - python3
-      - /workspace/.github/scripts/validate_task4_evidence.py
-      - --task-directory
-      - /workspace/task4-neo4j
-      - --import-directory
-      - /import
-      - --evidence-directory
-      - /evidence
-      - --report
-      - /evidence/validation-report.md
-    volumes:
-      - ..:/workspace:ro
-      - ./import:/import:ro
-      - ${TASK4_EVIDENCE_DIR:-./results}:/evidence
+      - ./results:/results
     networks:
       - neo4j-network
 

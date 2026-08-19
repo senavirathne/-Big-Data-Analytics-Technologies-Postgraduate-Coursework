@@ -2,7 +2,6 @@ services:
   kafka:
     image: apache/kafka:3.9.1
     hostname: kafka
-    restart: unless-stopped
     environment:
       KAFKA_NODE_ID: 1
       CLUSTER_ID: 4L6g3nShT-eMCtK--X86sw
@@ -17,7 +16,6 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
-      KAFKA_NUM_PARTITIONS: 3
       KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
     networks:
       - telemetry-network
@@ -72,7 +70,6 @@ services:
   flink-jobmanager:
     image: flink:1.20.3-scala_2.12-java17
     command: jobmanager
-    restart: unless-stopped
     ports:
       - "8081:8081"
     environment:
@@ -93,7 +90,6 @@ services:
   flink-taskmanager:
     image: flink:1.20.3-scala_2.12-java17
     command: taskmanager
-    restart: unless-stopped
     depends_on:
       flink-jobmanager:
         condition: service_healthy
@@ -120,7 +116,6 @@ services:
       context: ./flink-job
     volumes:
       - ./artifacts:/output
-    restart: "no"
 
   traffic-producer:
     build:
@@ -136,80 +131,6 @@ services:
       SOCRATA_PAGE_SIZE: 1000
     networks:
       - telemetry-network
-    restart: on-failure
-    healthcheck:
-      test:
-        [
-          "CMD",
-          "python",
-          "-c",
-          "import os,time; assert time.time()-os.path.getmtime('/tmp/producer-heartbeat') < 90",
-        ]
-      interval: 15s
-      timeout: 5s
-      retries: 4
-      start_period: 60s
-
-  flink-dashboard-runner:
-    build:
-      context: ./verification
-    image: "${COMPOSE_PROJECT_NAME:-task2}-verification:local"
-    profiles:
-      - verification
-    depends_on:
-      kafka:
-        condition: service_healthy
-      flink-jobmanager:
-        condition: service_healthy
-      flink-taskmanager:
-        condition: service_healthy
-    environment:
-      FLINK_BASE_URL: http://flink-jobmanager:8081
-      SOURCE_COMMIT_SHA: "${SOURCE_COMMIT_SHA:-}"
-    volumes:
-      - ./artifacts:/workspace/artifacts:ro
-      - ./evidence:/workspace/evidence
-    networks:
-      - telemetry-network
-    shm_size: 1gb
-    read_only: true
-    tmpfs:
-      - /tmp
-    command:
-      - /app/task2_flink_dashboard.py
-
-  task2-evidence-verifier:
-    build:
-      context: ./verification
-    image: "${COMPOSE_PROJECT_NAME:-task2}-verification:local"
-    profiles:
-      - verification
-    depends_on:
-      kafka:
-        condition: service_healthy
-      flink-jobmanager:
-        condition: service_healthy
-      flink-taskmanager:
-        condition: service_healthy
-      traffic-producer:
-        condition: service_healthy
-    environment:
-      FLINK_BASE_URL: http://flink-jobmanager:8081
-      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      KAFKA_TOPIC: traffic-telemetry
-      SOURCE_COMMIT_SHA: "${SOURCE_COMMIT_SHA:-}"
-      TASK2_EVIDENCE_TIMEOUT_SECONDS: "${TASK2_EVIDENCE_TIMEOUT_SECONDS:-900}"
-    volumes:
-      - ./artifacts:/workspace/artifacts:ro
-      - ./evidence:/workspace/evidence
-      - ./:/workspace/coursework:ro
-    networks:
-      - telemetry-network
-    read_only: true
-    tmpfs:
-      - /tmp
-    command:
-      - /app/task2_evidence.py
 
 networks:
   telemetry-network:

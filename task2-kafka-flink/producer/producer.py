@@ -2,18 +2,10 @@ import json
 import os
 import time
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Iterator
 
 import requests
 from kafka import KafkaProducer
-
-
-HEARTBEAT_PATH = Path("/tmp/producer-heartbeat")
-
-
-def touch_heartbeat() -> None:
-    HEARTBEAT_PATH.touch()
 
 
 def austin_rows(session: requests.Session) -> Iterator[dict]:
@@ -22,7 +14,6 @@ def austin_rows(session: requests.Session) -> Iterator[dict]:
     offset = 0
 
     while True:
-        touch_heartbeat()
         response = session.get(
             url,
             params={
@@ -52,24 +43,12 @@ def utc_event_time(value: str) -> datetime:
     return parsed.astimezone(UTC)
 
 
-def optional_float(row: dict, name: str) -> float | None:
-    value = row.get(name)
-    return float(value) if value not in (None, "") else None
-
-
 def telemetry_message(row: dict) -> dict:
     event_time = utc_event_time(row["read_date"])
     return {
-        "record_id": row["record_id"],
         "sensor_id": str(row["atd_device_id"]),
-        "event_timestamp": event_time.isoformat().replace("+00:00", "Z"),
         "event_timestamp_ms": int(event_time.timestamp() * 1000),
         "vehicle_count": int(float(row["volume"])),
-        "intersection_name": row.get("intersection_name"),
-        "direction": row.get("direction"),
-        "movement": row.get("movement"),
-        "heavy_vehicle": row.get("heavy_vehicle", False),
-        "speed_average": optional_float(row, "speed_average"),
     }
 
 
@@ -79,9 +58,6 @@ def main() -> None:
     interval = float(os.environ["PUBLISH_INTERVAL_SECONDS"])
 
     session = requests.Session()
-    app_token = os.getenv("SOCRATA_APP_TOKEN")
-    if app_token:
-        session.headers["X-App-Token"] = app_token
 
     producer = KafkaProducer(
         bootstrap_servers=bootstrap_servers,
@@ -111,10 +87,10 @@ def main() -> None:
             producer.send(topic, key=message["sensor_id"], value=message).get(timeout=30)
             last_publication_at = time.monotonic()
             published += 1
-            touch_heartbeat()
             print(
-                f"published record={message['record_id']} sensor={message['sensor_id']} "
-                f"event_time={message['event_timestamp']} count={message['vehicle_count']}",
+                f"published sensor={message['sensor_id']} "
+                f"event_timestamp_ms={message['event_timestamp_ms']} "
+                f"count={message['vehicle_count']}",
                 flush=True,
             )
     finally:

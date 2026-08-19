@@ -1,7 +1,11 @@
 observations =
     from(bucket: "climate_raw")
-        |> range(start: 1980-01-01T08:00:00Z, stop: 2020-01-01T00:00:00Z)
-        |> filter(fn: (r) => r._measurement == "airport_wind" and r.station == "PAFA")
+        |> range(start: 2005-12-31T23:00:00Z, stop: 2016-12-31T23:00:00Z)
+        |> filter(
+            fn: (r) =>
+                r._measurement == "weather" and r.location == "Szeged" and
+                    r._field == "temperature_c",
+        )
         |> group(columns: ["_field"])
 
 means =

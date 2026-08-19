@@ -50,9 +50,7 @@ def main() -> None:
     in_degrees = (
         edges.groupBy("destination")
         .agg(F.count(F.lit(1)).alias("in_degree"))
-        .persist(StorageLevel.MEMORY_AND_DISK)
     )
-    destination_count = in_degrees.count()
     top_50 = in_degrees.orderBy(
         F.desc("in_degree"), F.asc("destination")
     ).limit(50)
@@ -67,15 +65,8 @@ def main() -> None:
             writer.writerow([rank, row["destination"], row["in_degree"]])
 
     print(f"Parsed edge rows: {edge_count}")
-    print(f"Distinct destination vertices: {destination_count}")
     print(f"Top-50 ranking written to {output}")
-    for rank, row in enumerate(rows, start=1):
-        print(
-            f"rank={rank}, destination={row['destination']}, "
-            f"in_degree={row['in_degree']}"
-        )
 
-    in_degrees.unpersist()
     edges.unpersist()
     spark.stop()
 

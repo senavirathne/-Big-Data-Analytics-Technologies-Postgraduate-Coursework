@@ -15,7 +15,7 @@ import org.apache.flink.connector.kafka.source.enumerator.initializer.OffsetsIni
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.windowing.ProcessWindowFunction;
-import org.apache.flink.streaming.api.windowing.assigners.SlidingEventTimeWindows;
+import org.apache.flink.streaming.api.windowing.assigners.TumblingEventTimeWindows;
 import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
 import org.apache.flink.util.Collector;
 
@@ -31,9 +31,6 @@ public final class TrafficWindowJob {
         StreamExecutionEnvironment environment =
                 StreamExecutionEnvironment.getExecutionEnvironment();
         environment.setParallelism(3);
-        environment.enableCheckpointing(60_000L);
-        environment.getConfig().setAutoWatermarkInterval(1_000L);
-        environment.getConfig().setGlobalJobParameters(parameters);
 
         KafkaSource<String> source = KafkaSource.<String>builder()
                 .setBootstrapServers(bootstrapServers)
@@ -63,17 +60,13 @@ public final class TrafficWindowJob {
                 .assignTimestampsAndWatermarks(watermarkStrategy)
                 .name("ten-second-bounded-out-of-orderness")
                 .keyBy(TrafficEvent::getSensorId)
-                .window(
-                        SlidingEventTimeWindows.of(
-                                Duration.ofMinutes(15),
-                                Duration.ofMinutes(10)))
+                .window(TumblingEventTimeWindows.of(Duration.ofMinutes(15)))
                 .aggregate(new VehicleCountSum(), new FormatWindowTotal())
-                .name("fifteen-minute-total-sliding-every-ten-minutes-by-sensor")
+                .name("fifteen-minute-tumbling-total-by-sensor")
                 .print()
-                .name("print-fifteen-minute-sliding-sensor-totals");
+                .name("print-fifteen-minute-sensor-totals");
 
-        environment.execute(
-                "Austin traffic telemetry: 15-minute totals sliding every 10 minutes");
+        environment.execute("Austin traffic telemetry: 15-minute tumbling sensor totals");
     }
 
     public static class TrafficEvent {

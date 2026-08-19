@@ -1,47 +1,49 @@
-# Task 3 — Spark
+# Task 3 — Scalable analytics with Apache Spark
 
-All Task 3 runtime and verification dependencies run in Docker. From this
-directory, build the verification image before the dataset is downloaded, then
-start the two-worker cluster and one-shot analysis:
+Task 3 runs entirely in Docker Compose. The topology contains one Spark master,
+two independent workers limited to 2 CPU cores and 2 GB RAM each, a dataset
+initializer, a one-shot `spark-submit` container, and a History Server for
+reviewing the completed application.
+
+## Run the analysis
+
+From this directory:
 
 ```sh
-docker compose build evidence-verifier
 docker compose up --detach
 docker compose wait run-analysis
 ```
 
-While the cluster is running, open the master UI at <http://localhost:8080>. It
-must show exactly two `ALIVE` workers, each with 2 cores and 2048 MiB memory.
-After `run-analysis` exits successfully, open the Spark History Server at
-<http://localhost:18080>, select `WebBerkStanInDegreeAnalysis`, and use its Jobs
-and Stages pages to review the completed application's DAG visualization, stage
-durations, shuffle metrics, and executor allocation.
+On the first run, `dataset-init` downloads, decompresses, and validates the
+assigned SNAP `web-BerkStan` edge list in `data/web-BerkStan.txt`. The same host
+directory is mounted read-only into both workers and the analysis container.
 
-The ranking is in `output/top_50_indegree.csv`. The History Server reconstructs
-its Web Console from the event logs in `events/`; the same logs are parsed into
-`metrics/execution-metrics.json` to record the stage, DAG, shuffle-allocation,
-two-worker data-skew, execution-imbalance, and bottleneck evidence in a
-machine-readable form. Data skew is assessed only from input and shuffle
-record/byte allocation. Task-duration imbalance and stages that inherently use
-only one task or worker are recorded separately and are not mislabeled as data
-skew.
+The PySpark job removes blank and `#` metadata lines lazily, parses the two edge
+columns into a DataFrame, caches the parsed edges, groups by destination to
+calculate in-degree, and writes the ordered Top 50 to:
 
-After `run-analysis` exits with code zero, run the validator and browser capture
-inside the opt-in verification container. Supply the full commit SHA for the
-source revision that produced the evidence:
-
-```sh
-COURSEWORK_COMMIT_SHA="$(git rev-parse HEAD)" \
-  docker compose run --rm --no-deps evidence-verifier
+```text
+output/top_50_indegree.csv
 ```
 
-The container validates the Top 50, Spark event log, DAG, stage-duration,
-shuffle, worker-allocation, data-skew, execution-imbalance, and bottleneck
-evidence. Its bundled headless Chromium connects to `spark-master` and
-`spark-history-server` over `spark-network`; no host Python, Playwright, browser,
-`curl`, or `jq` installation is required. Screenshots and audit files are written
-to `evidence/`. `evidence/task3-evidence-manifest.json` records SHA-256 hashes for
-the evidence, ranking, metrics, and event logs and binds them to the supplied
-commit SHA.
+## Review execution metrics
 
-Stop the cluster with `docker compose down`.
+Open the Spark Master UI at <http://localhost:8080>. It should show exactly two
+`ALIVE` workers, each advertising 2 cores and 2048 MiB memory.
+
+After `run-analysis` completes, open <http://localhost:18080>, select
+`WebBerkStanInDegreeAnalysis`, and review its Jobs and Stages pages. Record the
+job DAG, stage durations, shuffle read/write values, and the allocation of work
+across the two workers.
+
+The completed Spark event log is retained in `events/`. A compact extraction is
+written to `metrics/execution-metrics.json`; it contains the application and job
+IDs, stage-parent DAG, per-stage duration and shuffle totals, per-worker task,
+input, and shuffle allocation, and direct maximum-to-minimum comparisons for
+investigating possible worker skew.
+
+Stop the containers when the review is complete:
+
+```sh
+docker compose down
+```

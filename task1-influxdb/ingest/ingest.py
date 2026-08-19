@@ -2,66 +2,103 @@ import csv
 import io
 import math
 import os
+import shutil
+import tempfile
+import zipfile
 from datetime import UTC, datetime
-from typing import Iterator, TextIO
+from typing import Iterator
 from urllib.request import Request, urlopen
 
 from influxdb_client import InfluxDBClient, Point, WritePrecision
 from influxdb_client.client.write_api import SYNCHRONOUS
 
 
-ASSIGNED_DATASET_URL = (
-    "https://data.snap.uaf.edu/data/Base/Other/historical_winds_Alaska_airports/"
-    "alaska_airports_hourly_winds_PAFA.csv"
+SZEGED_DATASET_URL = (
+    "https://www.kaggle.com/api/v1/datasets/download/"
+    "budincsevity/szeged-weather"
 )
-EXPECTED_COLUMNS = ["ts", "ws", "wd"]
-EXPECTED_RECORD_COUNT = 345_587
-MEASUREMENT = "airport_wind"
-STATION = "PAFA"
-TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
+CSV_MEMBER = "weatherHistory.csv"
+EXPECTED_COLUMNS = [
+    "Formatted Date",
+    "Summary",
+    "Precip Type",
+    "Temperature (C)",
+    "Apparent Temperature (C)",
+    "Humidity",
+    "Wind Speed (km/h)",
+    "Wind Bearing (degrees)",
+    "Visibility (km)",
+    "Loud Cover",
+    "Pressure (millibars)",
+    "Daily Summary",
+]
+NUMERIC_FIELDS = {
+    "Temperature (C)": "temperature_c",
+    "Apparent Temperature (C)": "apparent_temperature_c",
+    "Humidity": "humidity",
+    "Wind Speed (km/h)": "wind_speed_kmh",
+    "Wind Bearing (degrees)": "wind_bearing_degrees",
+    "Visibility (km)": "visibility_km",
+    "Loud Cover": "cloud_cover",
+    "Pressure (millibars)": "pressure_millibars",
+}
+TEXT_FIELDS = {
+    "Summary": "summary",
+    "Precip Type": "precip_type",
+    "Daily Summary": "daily_summary",
+}
+EXPECTED_RECORD_COUNT = 96_453
+MEASUREMENT = "weather"
+LOCATION = "Szeged"
+TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S.%f %z"
 BATCH_SIZE = 5_000
 
 
 def source_url() -> str:
-    configured = os.environ.get("WIND_CSV_URL", ASSIGNED_DATASET_URL)
-    if configured != ASSIGNED_DATASET_URL:
-        raise RuntimeError(
-            "WIND_CSV_URL must be the assigned PAFA historical-winds CSV; "
-            "alternate datasets are not accepted"
-        )
-    return configured
+    return os.environ.get("SZEGED_DATASET_URL", SZEGED_DATASET_URL)
 
 
 def csv_rows(url: str) -> Iterator[dict[str, str]]:
     request = Request(
         url,
         headers={
-            "Accept": "text/csv",
+            "Accept": "application/zip",
             "User-Agent": "Coventry-Big-Data-Coursework-Task-1/1.0",
         },
     )
+
     with urlopen(request, timeout=120) as response:
-        content_type = response.headers.get_content_type().lower()
-        if content_type not in {"text/csv", "application/csv", "text/plain"}:
-            raise RuntimeError(
-                f"assigned dataset returned {content_type!r}, not a CSV content type"
-            )
+        with tempfile.SpooledTemporaryFile(max_size=4 * 1024 * 1024) as archive:
+            shutil.copyfileobj(response, archive)
+            archive.seek(0)
 
-        stream: TextIO = io.TextIOWrapper(response, encoding="utf-8-sig", newline="")
-        reader = csv.DictReader(stream)
-        if reader.fieldnames != EXPECTED_COLUMNS:
-            raise RuntimeError(
-                f"unexpected CSV columns {reader.fieldnames!r}; expected {EXPECTED_COLUMNS!r}"
-            )
-        yield from reader
+            try:
+                with zipfile.ZipFile(archive) as dataset:
+                    if dataset.namelist() != [CSV_MEMBER]:
+                        raise RuntimeError(
+                            f"unexpected Kaggle archive members {dataset.namelist()!r}; "
+                            f"expected only {CSV_MEMBER!r}"
+                        )
+
+                    with dataset.open(CSV_MEMBER) as raw_csv:
+                        with io.TextIOWrapper(
+                            raw_csv, encoding="utf-8-sig", newline=""
+                        ) as stream:
+                            reader = csv.DictReader(stream)
+                            if reader.fieldnames != EXPECTED_COLUMNS:
+                                raise RuntimeError(
+                                    f"unexpected CSV columns {reader.fieldnames!r}; "
+                                    f"expected {EXPECTED_COLUMNS!r}"
+                                )
+                            yield from reader
+            except zipfile.BadZipFile as error:
+                raise RuntimeError("Kaggle did not return a valid ZIP archive") from error
 
 
-def finite_float(value: str, column: str, *, required: bool) -> float | None:
+def finite_float(value: str, column: str) -> float:
     candidate = value.strip()
     if not candidate:
-        if required:
-            raise ValueError(f"{column} is empty")
-        return None
+        raise ValueError(f"{column} is empty")
 
     try:
         number = float(candidate)
@@ -72,27 +109,33 @@ def finite_float(value: str, column: str, *, required: bool) -> float | None:
     return number
 
 
+def required_text(value: str, column: str) -> str:
+    candidate = value.strip()
+    if not candidate:
+        raise ValueError(f"{column} is empty")
+    return candidate
+
+
 def point_for_row(row: dict[str, str]) -> Point:
-    if set(row) != set(EXPECTED_COLUMNS):
+    if list(row) != EXPECTED_COLUMNS:
         raise ValueError(f"row does not match the expected columns: {row!r}")
 
     try:
-        timestamp = datetime.strptime(row["ts"].strip(), TIMESTAMP_FORMAT).replace(tzinfo=UTC)
+        timestamp = datetime.strptime(
+            row["Formatted Date"].strip(), TIMESTAMP_FORMAT
+        ).astimezone(UTC)
     except ValueError as error:
-        raise ValueError(f"invalid original timestamp: {row['ts']!r}") from error
+        raise ValueError(
+            f"invalid original timestamp: {row['Formatted Date']!r}"
+        ) from error
 
-    wind_speed = finite_float(row["ws"], "ws", required=True)
-    wind_direction = finite_float(row["wd"], "wd", required=False)
+    point = Point(MEASUREMENT).tag("location", LOCATION)
+    for source_column, field_name in NUMERIC_FIELDS.items():
+        point.field(field_name, finite_float(row[source_column], source_column))
+    for source_column, field_name in TEXT_FIELDS.items():
+        point.field(field_name, required_text(row[source_column], source_column))
 
-    point = (
-        Point(MEASUREMENT)
-        .tag("station", STATION)
-        .field("ws", wind_speed)
-        .time(timestamp, WritePrecision.NS)
-    )
-    if wind_direction is not None:
-        point.field("wd", wind_direction)
-    return point
+    return point.time(timestamp, WritePrecision.NS)
 
 
 def flush(write_api, line_protocol: list[str], bucket: str, org: str) -> None:
@@ -133,9 +176,9 @@ def main() -> None:
 
     if written != EXPECTED_RECORD_COUNT:
         raise RuntimeError(
-            f"assigned CSV supplied {written} rows; expected {EXPECTED_RECORD_COUNT}"
+            f"Szeged CSV supplied {written} rows; expected {EXPECTED_RECORD_COUNT}"
         )
-    print(f"ingested {written} PAFA historical wind records")
+    print(f"ingested {written} Szeged weather records")
 
 
 if __name__ == "__main__":

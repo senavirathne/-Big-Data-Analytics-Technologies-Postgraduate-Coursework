@@ -14,15 +14,12 @@ python3 /opt/coursework/apps/wait_for_cluster.py
   --conf spark.eventLog.enabled=true \
   --conf spark.eventLog.dir=file:///opt/spark-events \
   --conf spark.eventLog.compress=false \
-  --conf spark.eventLog.logBlockUpdates.enabled=true \
   /opt/coursework/apps/analyze_graph.py \
   --input file:///data/web-BerkStan.txt \
   --output /output/top_50_indegree.csv
 
 # The analysis container runs as root so it can write to bind-mounted output
-# directories. Spark consequently creates its event log with permissions that
-# can exclude the non-root History Server and GitHub artifact uploader. The
-# application has finished at this point, so expose the completed log read-only.
+# directories. Make the completed event log readable by the History Server.
 find /opt/spark-events -type d -exec chmod 0755 {} +
 find /opt/spark-events -type f -exec chmod 0644 {} +
 
