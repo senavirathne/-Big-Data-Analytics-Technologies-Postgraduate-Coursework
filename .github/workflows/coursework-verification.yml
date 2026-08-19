@@ -1,0 +1,525 @@
+name: Coursework verification
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "task1-influxdb/**"
+      - "task2-kafka-flink/**"
+      - "task3-spark/**"
+      - "task4-neo4j/**"
+      - "task5-literature-review.md"
+      - ".github/workflows/coursework-verification.yml"
+  pull_request:
+    paths:
+      - "task1-influxdb/**"
+      - "task2-kafka-flink/**"
+      - "task3-spark/**"
+      - "task4-neo4j/**"
+      - "task5-literature-review.md"
+      - ".github/workflows/coursework-verification.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coursework-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  task-1-influxdb:
+    name: Task 1 / InfluxDB and Flux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      COMPOSE_PROJECT_NAME: task1-ci-${{ github.run_id }}-${{ github.run_attempt }}
+
+    steps:
+      - name: Check out coursework
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Run and verify Task 1
+        working-directory: task1-influxdb
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose config --quiet
+          docker compose up --build --detach
+
+          wait_for_service() {
+            local service="$1"
+            local container_id
+            local status
+            container_id="$(docker compose ps --all --quiet "$service")"
+            test -n "$container_id"
+            if ! status="$(timeout 15m docker container wait "$container_id")"; then
+              echo "$service did not finish within 15 minutes" >&2
+              return 1
+            fi
+            if [[ "$status" != "0" ]]; then
+              echo "$service exited with status $status" >&2
+              return 1
+            fi
+          }
+
+          wait_for_service influx-setup
+          wait_for_service climate-ingest
+          service_logs="$(
+            docker compose logs --no-color influx-setup climate-ingest
+          )"
+          printf '%s\n' "$service_logs"
+          grep -Fq "ingested 96453 Szeged weather records" \
+            <<<"$service_logs"
+
+          docker compose exec -T influxdb influx ping \
+            --host http://localhost:8086
+
+          count_result="$(
+            docker compose exec -T influxdb influx query \
+              --host http://localhost:8086 \
+              --org big-data-coursework \
+              --token coursework-influx-token \
+              'from(bucket: "climate_raw")
+                |> range(start: 2005-12-31T23:00:00Z, stop: 2016-12-31T23:00:00Z)
+                |> filter(fn: (r) => r._measurement == "weather" and
+                    r.location == "Szeged" and r._field == "temperature_c")
+                |> count()'
+          )"
+          printf '%s\n' "$count_result"
+          grep -Fq "96429" <<<"$count_result"
+
+          for query_file in \
+            01_sliding_hourly_average.flux \
+            02_two_sigma_anomalies.flux \
+            03_continuous_downsample.flux; do
+            timeout 10m docker compose exec -T influxdb influx query \
+              --host http://localhost:8086 \
+              --org big-data-coursework \
+              --token coursework-influx-token \
+              --file "/queries/$query_file" \
+              >/dev/null
+          done
+
+          task_table="$(
+            docker compose exec -T influxdb influx task list \
+              --host http://localhost:8086 \
+              --org big-data-coursework \
+              --token coursework-influx-token \
+              --hide-headers
+          )"
+          task_id="$(
+            awk '$2 == "climate-hourly-downsample-30d" {print $1; exit}' \
+              <<<"$task_table"
+          )"
+          test -n "$task_id"
+          task_json="$(
+            docker compose exec -T influxdb influx task list \
+              --host http://localhost:8086 \
+              --org big-data-coursework \
+              --token coursework-influx-token \
+              --id "$task_id" \
+              --json
+          )"
+          compact_task_json="$(tr -d '[:space:]' <<<"$task_json")"
+          for fragment in \
+            '"status":"active"' \
+            'climate_raw' \
+            'weather' \
+            'temperature_c' \
+            'climate_30d'; do
+            grep -Fq "$fragment" <<<"$compact_task_json"
+          done
+
+          bucket_json="$(
+            docker compose exec -T influxdb influx bucket list \
+              --host http://localhost:8086 \
+              --org big-data-coursework \
+              --token coursework-influx-token \
+              --name climate_30d \
+              --json
+          )"
+          compact_bucket_json="$(tr -d '[:space:]' <<<"$bucket_json")"
+          grep -Fq '"everySeconds":2592000' <<<"$compact_bucket_json"
+          echo "PASS: Task 1 ingestion and all three Flux operations verified"
+
+      - name: Show Task 1 status and clean up
+        if: always()
+        working-directory: task1-influxdb
+        shell: bash
+        run: |
+          docker compose ps --all || true
+          docker compose logs --no-color --tail=200 || true
+          docker compose down --volumes --remove-orphans || true
+
+  task-2-kafka-flink:
+    name: Task 2 / Kafka and Flink
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      COMPOSE_PROJECT_NAME: task2-ci-${{ github.run_id }}-${{ github.run_attempt }}
+
+    steps:
+      - name: Check out coursework
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Run and verify Task 2
+        working-directory: task2-kafka-flink
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose config --quiet
+          docker compose run --build --rm flink-job-build
+          test -s artifacts/traffic-window-job.jar
+
+          docker compose up --build --detach --wait --wait-timeout 240 \
+            kafka flink-jobmanager flink-taskmanager
+
+          topic_description="$(
+            docker compose exec -T kafka \
+              /opt/kafka/bin/kafka-topics.sh \
+              --bootstrap-server localhost:9092 \
+              --describe \
+              --topic traffic-telemetry
+          )"
+          printf '%s\n' "$topic_description"
+          grep -Eq 'PartitionCount:[[:space:]]*3([^0-9]|$)' \
+            <<<"$topic_description"
+          grep -Eq 'ReplicationFactor:[[:space:]]*1([^0-9]|$)' \
+            <<<"$topic_description"
+
+          overview="$(
+            curl -fsS --retry 20 --retry-all-errors --retry-delay 2 \
+              http://localhost:8081/overview
+          )"
+          jq -e '.taskmanagers == 1 and .["slots-total"] == 3' \
+            <<<"$overview"
+          curl -fsS http://localhost:8081/ >/dev/null
+
+          upload="$(
+            curl -fsS \
+              -H 'Expect:' \
+              -F 'jarfile=@artifacts/traffic-window-job.jar;type=application/x-java-archive' \
+              http://localhost:8081/jars/upload
+          )"
+          jar_id="$(jq -r '.filename // empty | split("/") | last' <<<"$upload")"
+          test -n "$jar_id"
+
+          run_result="$(
+            curl -fsS \
+              -X POST \
+              -H 'Content-Type: application/json' \
+              --data '{
+                "entryClass": "com.coursework.TrafficWindowJob",
+                "parallelism": 3,
+                "programArgs": "--bootstrap-servers kafka:9092 --topic traffic-telemetry"
+              }' \
+              "http://localhost:8081/jars/$jar_id/run"
+          )"
+          job_id="$(jq -r '.jobid // empty' <<<"$run_result")"
+          test -n "$job_id"
+
+          job_state=UNKNOWN
+          for attempt in {1..60}; do
+            job_details="$(curl -fsS "http://localhost:8081/jobs/$job_id")"
+            job_state="$(jq -r '.state // "UNKNOWN"' <<<"$job_details")"
+            case "$job_state" in
+              RUNNING)
+                break
+                ;;
+              FAILED|CANCELED|FINISHED)
+                echo "Flink job entered terminal state $job_state" >&2
+                exit 1
+                ;;
+            esac
+            sleep 2
+          done
+          test "$job_state" = RUNNING
+
+          docker compose up --build --detach traffic-producer
+          messages="$(
+            timeout 180s docker compose exec -T kafka \
+              /opt/kafka/bin/kafka-console-consumer.sh \
+              --bootstrap-server localhost:9092 \
+              --topic traffic-telemetry \
+              --from-beginning \
+              --max-messages 2 \
+              --timeout-ms 170000
+          )"
+          printf '%s\n' "$messages"
+          test "$(grep -c '"sensor_id"' <<<"$messages")" -ge 2
+          grep -Fq '"event_timestamp_ms"' <<<"$messages"
+          grep -Fq '"vehicle_count"' <<<"$messages"
+
+          docker compose stop --timeout 30 traffic-producer
+          sleep 35
+
+          docker compose exec -T kafka \
+            /opt/kafka/bin/kafka-console-producer.sh \
+            --bootstrap-server localhost:9092 \
+            --topic traffic-telemetry \
+            --property parse.key=true \
+            --property 'key.separator=|' <<'MESSAGES'
+          ci-sensor|{"sensor_id":"ci-sensor","event_timestamp_ms":4102444800000,"vehicle_count":7}
+          ci-sensor|{"sensor_id":"ci-sensor","event_timestamp_ms":4102445100000,"vehicle_count":11}
+          ci-sensor|{"sensor_id":"ci-sensor","event_timestamp_ms":4102445760000,"vehicle_count":1}
+          MESSAGES
+
+          expected_window='{"sensor_id":"ci-sensor","window_start_ms":4102444800000,"window_end_ms":4102445700000,"vehicle_count_total":18}'
+          window_found=false
+          for attempt in {1..90}; do
+            taskmanager_logs="$(
+              docker compose logs --no-color flink-taskmanager
+            )"
+            if grep -Fq "$expected_window" <<<"$taskmanager_logs"; then
+              window_found=true
+              break
+            fi
+            sleep 2
+          done
+          test "$window_found" = true
+          grep -F "$expected_window" <<<"$taskmanager_logs"
+
+          final_state="$(
+            curl -fsS "http://localhost:8081/jobs/$job_id" \
+              | jq -r '.state'
+          )"
+          test "$final_state" = RUNNING
+          echo "PASS: Task 2 producer and 15-minute tumbling window verified"
+
+      - name: Show Task 2 status and clean up
+        if: always()
+        working-directory: task2-kafka-flink
+        shell: bash
+        run: |
+          docker compose ps --all || true
+          docker compose logs --no-color --tail=300 || true
+          docker compose down --volumes --remove-orphans || true
+
+  task-3-spark:
+    name: Task 3 / Spark standalone analysis
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      COMPOSE_PROJECT_NAME: task3-ci-${{ github.run_id }}-${{ github.run_attempt }}
+
+    steps:
+      - name: Check out coursework
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Run and verify Task 3
+        working-directory: task3-spark
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose config --quiet
+          docker compose up --detach
+
+          analysis_id="$(docker compose ps --all --quiet run-analysis)"
+          test -n "$analysis_id"
+          if ! analysis_status="$(timeout 45m docker container wait "$analysis_id")"; then
+            echo "Spark analysis did not finish within 45 minutes" >&2
+            exit 1
+          fi
+          test "$analysis_status" = 0
+          docker compose logs --no-color dataset-init run-analysis
+
+          awk -F, '
+            NR == 1 {
+              gsub(/\r/, "", $3)
+              if ($1 != "rank" || $2 != "destination" || $3 != "in_degree") exit 1
+              next
+            }
+            {
+              gsub(/\r/, "", $3)
+              if ($1 != NR - 1 || $3 <= 0) exit 1
+              if (NR > 2 && ($3 > previous_degree ||
+                  ($3 == previous_degree && $2 < previous_vertex))) exit 1
+              previous_degree = $3
+              previous_vertex = $2
+            }
+            END {if (NR != 51) exit 1}
+          ' output/top_50_indegree.csv
+
+          jq -e '
+            .application.name == "WebBerkStanInDegreeAnalysis" and
+            (.application.application_id | length > 0) and
+            (.jobs | length > 0) and
+            (.stage_parent_dag.stages | length > 0) and
+            (.stage_parent_dag.edges_parent_to_child | length > 0) and
+            (.stage_metrics | length > 0) and
+            ([.stage_metrics[].shuffle_read_bytes] | add > 0) and
+            ([.stage_metrics[].shuffle_write_bytes] | add > 0) and
+            (.application_worker_allocation | length == 2) and
+            (.application_worker_skew_comparison.worker_count == 2)
+          ' metrics/execution-metrics.json
+
+          event_log="$(find events -type f -size +0c -print -quit)"
+          test -n "$event_log"
+
+          master_status="$(
+            curl -fsS --retry 20 --retry-all-errors --retry-delay 2 \
+              http://localhost:8080/json/
+          )"
+          jq -e '
+            [.workers[] | select(.state == "ALIVE")] as $workers |
+            ($workers | length == 2) and
+            all($workers[]; .cores == 2 and .memory == 2048)
+          ' <<<"$master_status"
+
+          history_ready=false
+          for attempt in {1..30}; do
+            if applications="$(
+              curl -fsS http://localhost:18080/api/v1/applications
+            )" && jq -e \
+              'any(.[]; .name == "WebBerkStanInDegreeAnalysis")' \
+              <<<"$applications" >/dev/null; then
+              history_ready=true
+              break
+            fi
+            sleep 2
+          done
+          test "$history_ready" = true
+
+          sed -n '1,11p' output/top_50_indegree.csv
+          jq '{application, stage_parent_dag,
+            application_worker_allocation,
+            application_worker_skew_comparison}' \
+            metrics/execution-metrics.json
+          echo "PASS: Task 3 Spark outputs and execution metrics verified"
+
+      - name: Show Task 3 status and clean up
+        if: always()
+        working-directory: task3-spark
+        shell: bash
+        run: |
+          docker compose ps --all || true
+          docker compose logs --no-color --tail=300 || true
+          docker compose down --volumes --remove-orphans || true
+
+  task-4-neo4j:
+    name: Task 4 / Neo4j patent graph
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      COMPOSE_PROJECT_NAME: task4-ci-${{ github.run_id }}-${{ github.run_attempt }}
+      NEO4J_PASSWORD: task4-ci-${{ github.run_id }}-${{ github.run_attempt }}
+
+    steps:
+      - name: Check out coursework
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Run and verify Task 4
+        working-directory: task4-neo4j
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose config --quiet
+          docker compose up --detach --wait --wait-timeout 240 neo4j
+          docker compose run --rm --no-deps --no-TTY import-patents
+          docker compose run --rm --no-deps --no-TTY analyze-patents
+
+          test "$(wc -l < import/patent_edges_5000.csv | tr -d ' ')" = 5001
+          test -s results/query-execution.txt
+          test "$(
+            grep -Ec '^[[:space:]]*PROFILE[[:space:]]*$' \
+              cypher/analysis_queries.cypher
+          )" = 3
+          for marker in direct_neighbor in_degree hop_count; do
+            grep -Fq "$marker" results/query-execution.txt
+          done
+
+          curl -fsSL --retry 20 --retry-all-errors --retry-delay 2 \
+            -o /tmp/task4-browser.html \
+            http://localhost:7474/browser/
+          grep -qi neo4j /tmp/task4-browser.html
+
+          query() {
+            docker compose exec -T neo4j cypher-shell \
+              --address bolt://localhost:7687 \
+              --username neo4j \
+              --password "$NEO4J_PASSWORD" \
+              --format plain \
+              "$1" \
+              | tail -n 1 \
+              | tr -d '\r'
+          }
+
+          test "$(
+            query 'MATCH ()-[:CITES]->() RETURN count(*);'
+          )" = 5000
+          test "$(
+            query 'MATCH (:Patent {id: 3858514})-[:CITES]-(:Patent) RETURN count(*);'
+          )" -gt 0
+          test "$(
+            query 'MATCH (patent:Patent)
+              OPTIONAL MATCH (:Patent)-[incoming:CITES]->(patent)
+              WITH patent, count(incoming) AS degree
+              ORDER BY degree DESC, patent.id ASC LIMIT 10
+              RETURN count(*);'
+          )" = 10
+          test "$(
+            query 'MATCH (start:Patent {id: 3484134}),
+                    (finish:Patent {id: 253889})
+              MATCH path = ANY SHORTEST (start)-[:CITES]-{1,15}(finish)
+              RETURN length(path);'
+          )" = 6
+
+          sed -n '1,220p' results/query-execution.txt
+          echo "PASS: Task 4 import and all three Cypher analyses verified"
+
+      - name: Show Task 4 status and clean up
+        if: always()
+        working-directory: task4-neo4j
+        shell: bash
+        run: |
+          docker compose ps --all || true
+          docker compose logs --no-color --tail=300 || true
+          docker compose down --volumes --remove-orphans || true
+
+  task-5-literature:
+    name: Task 5 / Literature-review structure
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out coursework
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Verify Task 5 document structure
+        shell: bash
+        run: |
+          set -euo pipefail
+          paper=task5-literature-review.md
+          test -s "$paper"
+          grep -Eq '^### 5\.1([[:space:]]|$)' "$paper"
+          grep -Eq '^### 5\.2([[:space:]]|$)' "$paper"
+          grep -Fxq '## References' "$paper"
+
+          for required_topic in \
+            'Data Mesh' \
+            'Data Contracts' \
+            'GDPR' \
+            'CCPA' \
+            'Apache Atlas' \
+            'OpenMetadata' \
+            'quantum machine learning' \
+            'NP-hard' \
+            'cryptographic signatures' \
+            'multidimensional indexing' \
+            'text-to-SQL' \
+            'self-healing' \
+            'Spark' \
+            'Flink' \
+            'nondeterminism'; do
+            grep -Fqi "$required_topic" "$paper"
+          done
+
+          recent_doi_count="$(
+            grep -E '\(202[3-6]\).*https://doi\.org/' "$paper" \
+              | wc -l \
+              | tr -d ' '
+          )"
+          test "$recent_doi_count" -ge 5
+          echo "PASS: Task 5 sections present; $recent_doi_count recent DOI references found"
