@@ -1,0 +1,5 @@
+* text=auto
+
+# Enforce LF for shell scripts and Python scripts (which might be run in Linux containers)
+*.sh text eol=lf
+*.py text eol=lf
