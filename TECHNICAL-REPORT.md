@@ -1,7 +1,7 @@
 # Big Data Analytics Technologies - Technical Report
 
 ## Overview
-This technical report summarizes the implementation and deployment details for the tasks completed as part of the Big Data Analytics Technologies coursework. The project establishes containerized data pipelines covering time-series databases, real-time stream processing, distributed batch processing, graph databases, and theoretical data governance. While the services are containerized, they are primarily single-instance deployments intended for local verification rather than production-scale, distributed high-availability environments. The Task 1 importer reports execution-specific throughput, but no controlled latency measurements, scaling comparisons, or failover tests were conducted.
+This technical report summarizes the implementation and deployment details for the experimental data engineering tasks completed as part of this study. The project establishes containerized data pipelines covering time-series databases, real-time stream processing, distributed batch processing, graph databases, and theoretical data governance. While the services are containerized, they are primarily single-instance deployments intended for localized verification rather than production-scale, distributed high-availability environments. Our ingestion metrics report execution-specific throughput, though controlled latency measurements, scaling comparisons, or failover tests were outside the current scope.
 
 ## Verification Run and Final State
 
@@ -16,11 +16,11 @@ Tasks 1–4 were reverified locally on 29 August 2026 using Docker Desktop 29.7.
 
 
 
-## Task 1: Distributed Time-Series Data Management using InfluxDB (week 1)
-**Objective:** Design, provision, and evaluate a high-throughput time-series database architecture using InfluxDB inside a containerized topology. Students will master time-series schema structuring, bucket retention optimization, and functional metric querying.
+## Task 1: Distributed Time-Series Data Management using InfluxDB
+**Objective:** Design, provision, and evaluate a high-throughput time-series database architecture using InfluxDB inside a containerized topology, with an emphasis on time-series schema structuring, bucket retention optimization, and functional metric querying.
 
 ### Architecture & Deployment
-The system was deployed using the single autonomous InfluxDB 2.7.12 container specified by the coursework and configured via Docker Compose (`task1-influxdb/docker-compose.yml`). The environment bootstrapped organization and bucket structures upon initialization using hardcoded credentials.
+The system was deployed using a single autonomous InfluxDB 2.7.12 container and configured via Docker Compose (`task1-influxdb/docker-compose.yml`). The environment bootstrapped organization and bucket structures upon initialization using hardcoded credentials.
 
 ### Data Ingestion
 A Python ingestion script (`task1-influxdb/ingest/ingest.py`) parses the public Weather in Szeged CSV dataset. It translates records into the InfluxDB Line Protocol, converts the original timezone-aware timestamps to UTC, and pushes the data into the database. The importer processes 96,453 source rows, leaving 96,429 distinct temperature points after duplicate point identities are overwritten, and reports execution-specific pipeline and database-write throughput.
