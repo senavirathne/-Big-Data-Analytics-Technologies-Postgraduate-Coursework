@@ -11,6 +11,9 @@ from pyspark.sql import SparkSession, functions as F
 from pyspark.storagelevel import StorageLevel
 
 
+EXPECTED_EDGE_COUNT = 7_600_595
+
+
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", required=True)
@@ -46,6 +49,12 @@ def main() -> None:
         .persist(StorageLevel.MEMORY_AND_DISK)
     )
     edge_count = edges.count()
+    if edge_count != EXPECTED_EDGE_COUNT:
+        edges.unpersist()
+        spark.stop()
+        raise RuntimeError(
+            f"Parsed {edge_count} edge rows; expected {EXPECTED_EDGE_COUNT}"
+        )
 
     in_degrees = (
         edges.groupBy("destination")

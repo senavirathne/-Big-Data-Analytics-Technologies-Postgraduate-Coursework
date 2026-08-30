@@ -6,6 +6,7 @@ import shutil
 import tempfile
 import zipfile
 from datetime import UTC, datetime
+from time import perf_counter
 from typing import Iterator
 from urllib.request import Request, urlopen
 
@@ -42,10 +43,12 @@ NUMERIC_FIELDS = {
     "Loud Cover": "cloud_cover",
     "Pressure (millibars)": "pressure_millibars",
 }
-TEXT_FIELDS = {
+REQUIRED_TEXT_FIELDS = {
     "Summary": "summary",
-    "Precip Type": "precip_type",
     "Daily Summary": "daily_summary",
+}
+OPTIONAL_TEXT_FIELDS = {
+    "Precip Type": "precip_type",
 }
 EXPECTED_RECORD_COUNT = 96_453
 MEASUREMENT = "weather"
@@ -132,22 +135,30 @@ def point_for_row(row: dict[str, str]) -> Point:
     point = Point(MEASUREMENT).tag("location", LOCATION)
     for source_column, field_name in NUMERIC_FIELDS.items():
         point.field(field_name, finite_float(row[source_column], source_column))
-    for source_column, field_name in TEXT_FIELDS.items():
+    for source_column, field_name in REQUIRED_TEXT_FIELDS.items():
         point.field(field_name, required_text(row[source_column], source_column))
+    for source_column, field_name in OPTIONAL_TEXT_FIELDS.items():
+        value = row[source_column].strip()
+        if value:
+            point.field(field_name, value)
 
     return point.time(timestamp, WritePrecision.NS)
 
 
-def flush(write_api, line_protocol: list[str], bucket: str, org: str) -> None:
+def flush(write_api, line_protocol: list[str], bucket: str, org: str) -> float:
     if not line_protocol:
-        return
+        return 0.0
+
+    write_started = perf_counter()
     write_api.write(
         bucket=bucket,
         org=org,
         record="\n".join(line_protocol),
         write_precision=WritePrecision.NS,
     )
+    write_elapsed = perf_counter() - write_started
     line_protocol.clear()
+    return write_elapsed
 
 
 def main() -> None:
@@ -157,7 +168,9 @@ def main() -> None:
     influx_token = os.environ["INFLUX_TOKEN"]
 
     written = 0
+    write_elapsed = 0.0
     batch: list[str] = []
+    pipeline_started = perf_counter()
 
     with InfluxDBClient(url=influx_url, token=influx_token, org=influx_org) as client:
         write_api = client.write_api(write_options=SYNCHRONOUS)
@@ -170,15 +183,27 @@ def main() -> None:
             batch.append(point.to_line_protocol(precision=WritePrecision.NS))
             written += 1
             if len(batch) == BATCH_SIZE:
-                flush(write_api, batch, influx_bucket, influx_org)
+                write_elapsed += flush(write_api, batch, influx_bucket, influx_org)
 
-        flush(write_api, batch, influx_bucket, influx_org)
+        write_elapsed += flush(write_api, batch, influx_bucket, influx_org)
+
+    pipeline_elapsed = perf_counter() - pipeline_started
 
     if written != EXPECTED_RECORD_COUNT:
         raise RuntimeError(
             f"Szeged CSV supplied {written} rows; expected {EXPECTED_RECORD_COUNT}"
         )
     print(f"ingested {written} Szeged weather records")
+    if write_elapsed > 0.0:
+        print(
+            f"InfluxDB write throughput: {written / write_elapsed:,.0f} records/s "
+            f"across {write_elapsed:.3f} s of synchronous writes"
+        )
+    if pipeline_elapsed > 0.0:
+        print(
+            f"end-to-end pipeline throughput: {written / pipeline_elapsed:,.0f} "
+            f"records/s across {pipeline_elapsed:.3f} s"
+        )
 
 
 if __name__ == "__main__":

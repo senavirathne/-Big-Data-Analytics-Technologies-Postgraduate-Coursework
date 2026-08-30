@@ -1,54 +1,54 @@
-# Task 4 — Neo4j patent citation graph
+# Graph Database Engineering using Neo4j
 
-This task runs entirely in Docker Compose. It downloads the SNAP patent citation
-dataset, prepares its first 5,000 directed citation paths, imports them into
-Neo4j Community Edition, and executes the three required `PROFILE` analyses.
+This component develops graph-native storage structures to run complex network lookups using Neo4j without incurring standard relational database multi-join computational penalties.
 
-## Run the task
+## Architecture & Tech Stack
+- **Database:** Neo4j Community Edition
+- **Query Language:** Cypher
+- **Dataset:** SNAP patent citation network
+- **Deployment:** Docker & Docker Compose
 
-From the repository root:
+## Features
+- **Graph Ingestion:** Cypher's `LOAD CSV` mechanism creates a dense graph network from 5,000 document citation paths.
+- **Structural Analysis:** Queries direct neighbor layers, computes degree centrality for incoming citations, and maps shortest path linkages across distant nodes.
+- **Query Optimization:** Utilizes `PROFILE` to analyze operator plans, database hits, and traversal behavior.
 
-```sh
-cd task4-neo4j
-export NEO4J_PASSWORD='choose-a-local-password'
+## Getting Started
 
-docker compose up --detach --wait neo4j
-docker compose run --rm --no-deps import-patents
-docker compose run --rm --no-deps analyze-patents
+### 1. Configure and Start Neo4j
+Set a secure local password for the database and spin up the Neo4j container:
+```bash
+$env:NEO4J_PASSWORD = 'choose-a-local-password'  # On Windows PowerShell
+# export NEO4J_PASSWORD='choose-a-local-password' # On Linux/macOS
+
+docker compose up --detach --wait --wait-timeout 240 neo4j
 ```
 
-Starting `neo4j` first runs the `prepare-patents` container. That container
-streams the official `cit-Patents.txt.gz` file and writes exactly the first
-5,000 non-comment citation rows to `import/patent_edges_5000.csv`.
+### 2. Import Data and Run Analytics
+Execute the automated scripts to prepare the dataset, ingest it into Neo4j, and run the analytical Cypher queries:
+```bash
+docker compose run --rm --no-deps --no-TTY import-patents
+docker compose run --rm --no-deps --no-TTY analyze-patents
+```
 
-The import creates a uniqueness constraint on `Patent.id`, merges patent nodes,
-and merges directed `CITES` relationships. Re-running it is idempotent. The
-analysis output is written to `results/query-execution.txt` and contains exactly
-three profiled queries:
+## Usage
 
-1. direct neighbours of patent `3858514`;
-2. the ten patents with the highest incoming citation degree; and
-3. a shortest path between patents `3484134` and `253889`.
+You can visually explore the graph and execute custom queries via the Neo4j Browser:
+- **URL:** `http://localhost:7474`
+- **Connection:** `bolt://localhost:7687`
+- **Username:** `neo4j`
+- **Password:** *(the password you set above)*
 
-## Verify in Neo4j Browser
-
-With the `neo4j` service running, open <http://localhost:7474>. Connect to
-`bolt://localhost:7687` with username `neo4j` and the password exported above.
-
-Run this query to confirm that the graph contains the prepared relationships:
-
+### Sample Queries
+You can run standard Cypher statements directly in the browser. For example, to verify the total relationship count:
 ```cypher
 MATCH ()-[citation:CITES]->()
 RETURN count(citation) AS directed_citations;
 ```
 
-The result should be `5000`. Then copy the three statements from
-`cypher/analysis_queries.cypher` into Neo4j Browser and run them individually.
-Each statement begins with `PROFILE`, so Browser displays both its result and
-execution plan.
-
-Stop the containers when the analysis is complete:
-
-```sh
-docker compose down --remove-orphans
+## Cleanup
+To stop the services while maintaining the current Neo4j container state:
+```bash
+docker compose stop --timeout 60
 ```
+*Note: Using `docker compose down` will delete the container-local graph data, requiring a re-import on the next startup.*

@@ -8,25 +8,49 @@ import requests
 from kafka import KafkaProducer
 
 
+def fetch_page(
+    session: requests.Session, url: str, params: dict[str, int | str]
+) -> list[dict]:
+    """Fetch one Socrata page with bounded retries for transient failures."""
+
+    for attempt in range(1, 6):
+        try:
+            response = session.get(url, params=params, timeout=60)
+            response.raise_for_status()
+            rows = response.json()
+            if not isinstance(rows, list):
+                raise RuntimeError(
+                    "the Austin dataset endpoint did not return a JSON row array"
+                )
+            return rows
+        except requests.RequestException as error:
+            if attempt == 5:
+                raise
+            delay = 2 ** (attempt - 1)
+            print(
+                f"Austin request failed ({error}); retrying in {delay}s",
+                flush=True,
+            )
+            time.sleep(delay)
+
+    raise AssertionError("unreachable")
+
+
 def austin_rows(session: requests.Session) -> Iterator[dict]:
     url = os.environ["AUSTIN_DATA_URL"]
     page_size = int(os.environ["SOCRATA_PAGE_SIZE"])
     offset = 0
 
     while True:
-        response = session.get(
+        rows = fetch_page(
+            session,
             url,
-            params={
+            {
                 "$limit": page_size,
                 "$offset": offset,
                 "$order": "read_date ASC, record_id ASC",
             },
-            timeout=60,
         )
-        response.raise_for_status()
-        rows = response.json()
-        if not isinstance(rows, list):
-            raise RuntimeError("the Austin dataset endpoint did not return a JSON row array")
         if not rows:
             return
 

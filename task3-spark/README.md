@@ -1,49 +1,47 @@
-# Task 3 — Scalable analytics with Apache Spark
+# Scalable Data Analytics with Apache Spark
 
-Task 3 runs entirely in Docker Compose. The topology contains one Spark master,
-two independent workers limited to 2 CPU cores and 2 GB RAM each, a dataset
-initializer, a one-shot `spark-submit` container, and a History Server for
-reviewing the completed application.
+This component utilizes an Apache Spark cluster to handle large-scale dataset ingestion and execute graph network topology transformations.
 
-## Run the analysis
+## Architecture & Tech Stack
+- **Engine:** Apache Spark (1 Master node, 2 Worker nodes)
+- **Implementation:** PySpark
+- **Dataset:** SNAP web-BerkStan network text file
+- **Deployment:** Docker & Docker Compose
 
-From this directory:
+## Features
+- **Cluster Resource Management:** Worker nodes are explicitly constrained (e.g., 2 compute cores, 2GB RAM).
+- **Distributed ETL:** Lazy evaluation parses 7.6 million directed edges into a Spark DataFrame.
+- **Graph Analytics:** Aggregates target vertex indexes to calculate in-degree distributions, extracting the top 50 dominant destination nodes.
+- **Performance Profiling:** Spark Web Console and History Server capture DAG logic chains, stage execution durations, and shuffle metrics.
 
-```sh
-docker compose up --detach
+## Getting Started
+
+### 1. Start the Spark Cluster & Run Analysis
+From this directory, spin up the entire Spark topology. This command will automatically start the master, workers, initialize the dataset, and submit the PySpark analysis job:
+```bash
+docker compose up --pull never --detach
+```
+
+### 2. Monitor Job Completion
+Wait for the analysis container to finish executing the script:
+```bash
 docker compose wait run-analysis
 ```
 
-On the first run, `dataset-init` downloads, decompresses, and validates the
-assigned SNAP `web-BerkStan` edge list in `data/web-BerkStan.txt`. The same host
-directory is mounted read-only into both workers and the analysis container.
+## Usage
 
-The PySpark job removes blank and `#` metadata lines lazily, parses the two edge
-columns into a DataFrame, caches the parsed edges, groups by destination to
-calculate in-degree, and writes the ordered Top 50 to:
+Once the job is completed, you can review the results and the cluster UI:
+- **Spark Master UI:** `http://localhost:8080` (Verify worker allocation).
+- **Spark History Server:** `http://localhost:18080` (Review DAGs, Shuffle Read/Write, and Stage timings for the `WebBerkStanInDegreeAnalysis` application).
+- **Output Results:** The top 50 in-degree node ranking is saved locally in `output/top_50_indegree.csv`.
+- **Metrics JSON:** Detailed performance tracking is exported to `metrics/execution-metrics.json`.
 
-```text
-output/top_50_indegree.csv
+## Cleanup
+To stop the Spark services while preserving the downloaded dataset and generated outputs:
+```bash
+docker compose stop
 ```
-
-## Review execution metrics
-
-Open the Spark Master UI at <http://localhost:8080>. It should show exactly two
-`ALIVE` workers, each advertising 2 cores and 2048 MiB memory.
-
-After `run-analysis` completes, open <http://localhost:18080>, select
-`WebBerkStanInDegreeAnalysis`, and review its Jobs and Stages pages. Record the
-job DAG, stage durations, shuffle read/write values, and the allocation of work
-across the two workers.
-
-The completed Spark event log is retained in `events/`. A compact extraction is
-written to `metrics/execution-metrics.json`; it contains the application and job
-IDs, stage-parent DAG, per-stage duration and shuffle totals, per-worker task,
-input, and shuffle allocation, and direct maximum-to-minimum comparisons for
-investigating possible worker skew.
-
-Stop the containers when the review is complete:
-
-```sh
-docker compose down
+To perform a complete teardown:
+```bash
+docker compose down --remove-orphans
 ```

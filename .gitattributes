@@ -1,0 +1,5 @@
+* text=auto
+
+# These files execute inside Linux containers and must retain LF endings.
+*.sh text eol=lf
+*.py text eol=lf

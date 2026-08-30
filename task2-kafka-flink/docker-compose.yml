@@ -16,6 +16,9 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # Let the post-start hook create the topic with the required partition count.
+      # This prevents a reconnecting Flink job from auto-creating it with one partition.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
       KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
     networks:
       - telemetry-network

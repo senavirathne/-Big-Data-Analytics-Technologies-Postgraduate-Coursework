@@ -1,4 +1,5 @@
 #!/bin/sh
+# Keep this bind-mounted script compatible with the Linux InfluxDB container.
 set -eu
 
 bucket_table="$(

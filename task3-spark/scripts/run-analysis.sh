@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Keep this bind-mounted script compatible with the Linux Spark container.
 set -euo pipefail
 
 python3 /opt/coursework/apps/wait_for_cluster.py

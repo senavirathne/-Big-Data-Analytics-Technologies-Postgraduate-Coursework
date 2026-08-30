@@ -1,51 +1,51 @@
-# Task 2: Kafka and Flink traffic telemetry
+# Real-Time Stream Ingestion & Processing
 
-This implementation runs entirely in Docker. The host requires Docker Engine and Docker
-Compose 2.30.0 or newer; Java, Maven, Python, Kafka, and Flink are provided by containers.
+This component implements a localized stream processing infrastructure using Apache Kafka and Apache Flink to process live telemetry data.
 
-## Build and start the stream platform
+## Architecture & Tech Stack
+- **Message Broker:** Apache Kafka (KRaft mode, 3 partitions, replication factor 1)
+- **Stream Processing Engine:** Apache Flink (1 JobManager, 1 TaskManager)
+- **Producer:** Python script replaying historical Austin traffic records
+- **Consumer/Job:** Java Flink Job (`TrafficWindowJob`)
+- **Deployment:** Docker & Docker Compose
 
-Run the following commands from this directory:
+## Features
+- **Live Stream Simulation:** A Python producer application pushes structured JSON traffic-count records into Kafka every 2 seconds.
+- **Stateful Processing:** A Flink pipeline consumes the stream, applying a `Bounded-OutOf-Orderness` watermarking strategy with a 10-second tolerance.
+- **Tumbling Windows:** Aggregates non-overlapping 15-minute vehicle-count totals per sensor.
 
-```sh
-docker compose run --build --rm flink-job-build
-docker compose up --build --detach --wait kafka flink-jobmanager flink-taskmanager
+## Getting Started
+
+### 1. Build and Start Infrastructure
+From this directory, build the Flink Job JAR and start the Kafka/Flink cluster:
+```bash
+docker compose run --build --rm --no-deps --no-TTY flink-job-build
+docker compose up --detach --wait --wait-timeout 240 kafka flink-jobmanager flink-taskmanager
 ```
 
-The first command writes `artifacts/traffic-window-job.jar`. The second starts one KRaft
-Kafka broker, one Flink JobManager, and one three-slot Flink TaskManager on the shared
-`telemetry-network` bridge. Kafka creates `traffic-telemetry` with three partitions and a
-replication factor of one.
+### 2. Submit the Flink Job
+1. Open the Flink Dashboard at `http://localhost:8081/#/submit`.
+2. Upload the compiled `artifacts/traffic-window-job.jar`.
+3. Set the Entry Class to: `com.coursework.TrafficWindowJob`
+4. Set Parallelism to: `3`
+5. Set Program Arguments to: `--bootstrap-servers kafka:9092 --topic traffic-telemetry`
+6. Click **Submit**.
 
-## Submit the job through the Flink Web Dashboard
-
-1. Open `http://localhost:8081/#/submit`.
-2. Upload `artifacts/traffic-window-job.jar`.
-3. Set the entry class to `com.coursework.TrafficWindowJob`.
-4. Set parallelism to `3`.
-5. Set program arguments to:
-
-   ```text
-   --bootstrap-servers kafka:9092 --topic traffic-telemetry
-   ```
-
-6. Select **Submit** and confirm that the job is running.
-
-## Start the producer
-
-After the Flink job is running, start the Austin traffic producer:
-
-```sh
-docker compose up --build --detach traffic-producer
-docker compose logs --follow traffic-producer flink-taskmanager
+### 3. Start the Live Producer
+Once the Flink job is running, start the Python traffic producer:
+```bash
+docker compose build traffic-producer
+docker compose up --detach --no-build --no-deps traffic-producer
 ```
 
-The producer publishes JSON containing `sensor_id`, `event_timestamp_ms`, and
-`vehicle_count` every two seconds. The Java job allows ten seconds of out-of-order event
-time, keys records by sensor, and prints totals from UTC-aligned 15-minute tumbling windows.
+## Usage
+You can monitor the live tumbling-window totals by tailing the TaskManager logs:
+```bash
+docker compose logs --follow flink-taskmanager
+```
 
-## Stop the platform
-
-```sh
-docker compose down --volumes --remove-orphans
+## Cleanup
+To stop and completely remove the containers, networks, and ephemeral data:
+```bash
+docker compose down --remove-orphans
 ```

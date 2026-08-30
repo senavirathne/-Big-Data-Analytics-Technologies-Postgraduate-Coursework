@@ -20,7 +20,9 @@ services:
       interval: 5s
       timeout: 3s
       retries: 30
-      start_period: 10s
+      # A retained Windows bind mount can contain hundreds of historical shards.
+      # Keep the container in its startup grace period while InfluxDB reopens them.
+      start_period: 10m
 
   influx-setup:
     image: influxdb:2.7.12-alpine

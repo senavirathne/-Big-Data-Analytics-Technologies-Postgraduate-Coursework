@@ -80,6 +80,9 @@ services:
 
   spark-history-server:
     image: *spark-image
+    # Event logs are atomically renamed on a Windows-hosted WSL 2 bind mount.
+    # Read them as root to avoid a transient EACCES race after cached reruns.
+    user: "0:0"
     hostname: spark-history-server
     depends_on:
       spark-master:

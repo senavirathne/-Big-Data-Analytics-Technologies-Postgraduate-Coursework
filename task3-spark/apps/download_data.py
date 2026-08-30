@@ -12,6 +12,38 @@ from pathlib import Path
 
 DATASET_URL = "https://snap.stanford.edu/data/web-BerkStan.txt.gz"
 TARGET = Path("/data/web-BerkStan.txt")
+EXPECTED_EDGE_COUNT = 7_600_595
+
+
+def validate_dataset(path: Path) -> int:
+    """Validate every non-comment edge and return its count."""
+
+    edge_count = 0
+    with path.open("rt", encoding="ascii") as source:
+        for line_number, line in enumerate(source, start=1):
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+
+            columns = stripped.split()
+            if len(columns) != 2:
+                raise RuntimeError(
+                    f"{path} line {line_number} has {len(columns)} columns; expected 2"
+                )
+            try:
+                int(columns[0])
+                int(columns[1])
+            except ValueError as error:
+                raise RuntimeError(
+                    f"{path} line {line_number} contains a non-integer node ID"
+                ) from error
+            edge_count += 1
+
+    if edge_count != EXPECTED_EDGE_COUNT:
+        raise RuntimeError(
+            f"{path} contains {edge_count} edges; expected {EXPECTED_EDGE_COUNT}"
+        )
+    return edge_count
 
 
 def download() -> None:
@@ -33,15 +65,25 @@ def download() -> None:
 
 def main() -> None:
     if TARGET.is_file() and TARGET.stat().st_size > 0:
-        print(f"Using existing uncompressed dataset at {TARGET}")
-        return
+        try:
+            edge_count = validate_dataset(TARGET)
+        except (OSError, RuntimeError, UnicodeError) as error:
+            print(f"Existing dataset is invalid and will be replaced: {error}")
+        else:
+            print(
+                f"Using validated dataset at {TARGET}: "
+                f"{edge_count} directed edges"
+            )
+            return
 
     TARGET.unlink(missing_ok=True)
     download()
-    if not TARGET.is_file() or TARGET.stat().st_size == 0:
+    try:
+        edge_count = validate_dataset(TARGET)
+    except (OSError, RuntimeError, UnicodeError):
         TARGET.unlink(missing_ok=True)
-        raise RuntimeError("The downloaded dataset is empty")
-    print(f"Downloaded and decompressed {TARGET}")
+        raise
+    print(f"Downloaded and validated {TARGET}: {edge_count} directed edges")
 
 
 if __name__ == "__main__":
